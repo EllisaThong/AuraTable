@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title></title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Plus+Jakarta+Sans:wght@400;600;700&family=VT323&display=swap');
+
+    :root {
+      --bg-dark: #080f12;
+      --panel-teal: rgba(14, 38, 42, 0.92);
+      --gold-accent: #e5b94c;
+      --gold-glow: rgba(229, 185, 76, 0.4);
+      --teal-light: #2dd4bf;
+      --text-main: #f0fdfa;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background: radial-gradient(circle at center, #13242a 0%, var(--bg-dark) 100%);
+      color: var(--text-main);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Outer Game Wrapper */
+    #game-container {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      max-width: 96vw;
+      max-height: 94vh;
+      aspect-ratio: 16 / 9;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 2px rgba(229, 185, 76, 0.4);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    /* Floating UI Controls Overlay */
+    #audio-toggle {
+      position: absolute;
+      top: 16px;
+      right: 280px;
+      background: rgba(14, 38, 42, 0.85);
+      border: 1px solid var(--gold-accent);
+      color: var(--gold-accent);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s ease;
+      z-index: 10;
+    }
+
+    #audio-toggle:hover {
+      background: var(--gold-accent);
+      color: #080f12;
+      box-shadow: 0 0 12px var(--gold-glow);
+    }
+
+    #instructions-modal {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 24, 28, 0.85);
+      border: 1px solid rgba(45, 212, 191, 0.3);
+      padding: 6px 18px;
+      border-radius: 20px;
+      font-size: 12px;
+      color: #99f6e4;
+      pointer-events: none;
+      backdrop-filter: blur(4px);
+      letter-spacing: 0.5px;
+      z-index: 5;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="game-container">
+    <button id="audio-toggle">🔊 Atmosphere Audio: On</button>
+    <div id="instructions-modal">
+      WASD / Arrow Keys: Move Mira • Approach Sol to trigger [E] Dialogue • Click / Space: Select
+    </div>
+    <canvas id="gameCanvas" width="1280" height="720"></canvas>
+  </div>
+
+  <script>
+    // --- Web Audio Synthesis for Tavern Ambience ---
+    class AudioManager {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+        this.rainGain = null;
+      }
+
+      init() {
+        if (this.ctx) return;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioCtx();
+
+        // Synthesize soft rain background white noise
+        const bufferSize = this.ctx.sampleRate * 2;
+        const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        let lastOut = 0.0;
+        for (let i = 0; i < bufferSize; i++) {
+          const white = Math.random() * 2 - 1;
+          output[i] = (lastOut + (0.02 * white)) / 1.02; // pinkish noise filter
+          lastOut = output[i];
+        }
+
+        const rainSource = this.ctx.createBufferSource();
+        rainSource.buffer = noiseBuffer;
+        rainSource.loop = true;
+
+        const rainFilter = this.ctx.createBiquadFilter();
+        rainFilter.type = 'lowpass';
+        rainFilter.frequency.value = 850;
+
+        this.rainGain = this.ctx.createGain();
+        this.rainGain.gain.value = 0.04;
+
+        rainSource.connect(rainFilter);
+        rainFilter.connect(this.rainGain);
+        this.rainGain.connect(this.ctx.destination);
+        rainSource.start();
+      }
+
+      playChime(freq = 520, duration = 0.4) {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.5, this.ctx.currentTime + duration);
+
+        gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+      }
+
+      playCelebration() {
+        if (!this.ctx || this.muted) return;
+        const notes = [440, 554, 659, 880];
+        notes.forEach((note, i) => {
+          setTimeout(() => this.playChime(note, 0.6), i * 110);
+        });
+      }
+
+      toggleMute() {
+        this.muted = !this.muted;
+        if (this.rainGain) {
+          this.rainGain.gain.value = this.muted ? 0 : 0.04;
+        }
+        return !this.muted;
+      }
+    }
+
+    const audio = new AudioManager();
+    const audioBtn = document.getElementById('audio-toggle');
+    audioBtn.addEventListener('click', () => {
+      audio.init();
+      const active = audio.toggleMute();
+      audioBtn.textContent = active ? '🔊 Atmosphere Audio: On' : '🔇 Atmosphere Audio: Muted';
+    });
+
+    // Start audio on first user gesture
+    window.addEventListener('keydown', () => audio.init(), { once: true });
+    window.addEventListener('click', () => audio.init(), { once: true });
+
+    // --- Image Loader ---
+    const assets = {};
+    const assetSources = {
+      bg: "images/backgrounds/scene_1_welcome_room.png",
+      mira_idle: "images/Characters/extracted/mira_idle.png",
+      mira_walk1: "images/Characters/extracted/mira_walk_1.png",
+      mira_walk2: "images/Characters/extracted/mira_walk_2.png",
+      mira_bow: "images/Characters/extracted/mira_bow.png",
+      mira_celebrate: "images/Characters/extracted/mira_celebrate.png",
+
+      sol_idle: "images/Characters/extracted/sol_idle.png",
+      sol_talk: "images/Characters/extracted/sol_talk.png",
+      sol_smile: "images/Characters/extracted/sol_smile.png",
+      sol_cheer: "images/Characters/extracted/sol_cheer.png",
+
+      lumi_float: "images/Characters/extracted/lumi_float.png",
+      lumi_point: "images/Characters/extracted/lumi_point.png",
+      lumi_happy: "images/Characters/extracted/lumi_happy.png",
+      lumi_sparkle: "images/Characters/extracted/lumi_sparkle.png",
+
+      crystal_0: "images/Characters/extracted/crystal_stage_0.png",
+      crystal_1: "images/Characters/extracted/crystal_stage_1.png",
+      crystal_2: "images/Characters/extracted/crystal_stage_2.png",
+      crystal_3: "images/Characters/extracted/crystal_stage_3.png",
+
+      interact_key: "images/ui/trimmed/interact_key.png",
+      herbal_card: "images/ui/trimmed/herbal_meal_card.png",
+      spicy_card: "images/ui/trimmed/spicy_meal_card.png",
+      btn_continue: "images/ui/trimmed/continue_button.png",
+      btn_replay: "images/ui/trimmed/replay_button.png",
+      candle: "images/objects/trimmed/candle.png",
+      rain_drop: "images/effects/trimmed/water_droplet.png",
+      glow_particle: "images/effects/trimmed/golden_glow_particle.png",
+      confetti: "images/effects/trimmed/confetti_particle.png"
+    };
+
+    let loadedCount = 0;
+    const totalAssets = Object.keys(assetSources).length;
+    for (const [k, src] of Object.entries(assetSources)) {
+      const img = new Image();
+      img.src = src;
+      img.onload = () => {
+        loadedCount++;
+        if (loadedCount === totalAssets) initGame();
+      };
+      assets[k] = img;
+    }
+
+    // --- Game Logic & Simulation ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const state = {
+      mode: "EXPLORE", // EXPLORE, DIALOGUE, CARD_SELECT, CELEBRATE, COMPLETE
+      dialoguePage: 0,
+      orderChoice: null,
+      qualityScore: 10,
+      fadeAlpha: 1.0,
+      time: 0,
+
+      // Mira
+      mira: {
+        x: 520,
+        y: 430, // Canvas coordinates (top is 0)
+        vx: 0,
+        vy: 0,
+        speed: 210,
+        facingRight: true,
+        animTimer: 0,
+        walkFrame: 0,
+        sprite: "mira_idle"
+      },
+
+      // Lumi
+      lumi: {
+        x: 590,
+        y: 360,
+        sprite: "lumi_float"
+      },
+
+      // Sol
+      sol: {
+        x: 1045,
+        y: 515,
+        sprite: "sol_idle"
+      },
+
+      // Crystal
+      crystalStage: 0,
+
+      // Rain
+      rain: [],
+      glow: [],
+      confetti: [],
+
+      // Inputs
+      keys: {},
+      mouse: { x: 0, y: 0 },
+      hoverCard: null,
+      hoverBtn: null,
+      promptVisible: false
+    };
+
+    // Initialize rain droplets on the window
+    for (let i = 0; i < 35; i++) {
+      state.rain.push({
+        x: 350 + Math.random() * 570,
+        y: 60 + Math.random() * 260,
+        speed: 180 + Math.random() * 140,
+        alpha: 0.5 + Math.random() * 0.4
+      });
+    }
+
+    // Initialize glow motes around Lumi
+    for (let i = 0; i < 7; i++) {
+      state.glow.push({
+        angle: Math.random() * Math.PI * 2,
+        speed: 1.5 + Math.random() * 2.0,
+        radius: 32 + Math.random() * 16,
+        alpha: 0.8
+      });
+    }
+
+    // Keyboard handlers
+    window.addEventListener('keydown', (e) => {
+      state.keys[e.key.toLowerCase()] = true;
+
+      if (state.mode === "EXPLORE") {
+        if (e.key.toLowerCase() === 'e') {
+          const dx = state.mira.x - state.sol.x;
+          const dy = state.mira.y - state.sol.y;
+          if (Math.hypot(dx, dy) < 240) {
+            startDialogue();
+          }
+        }
+      } else if (state.mode === "DIALOGUE") {
+        if (e.key === ' ' || e.key === 'Enter' || e.key.toLowerCase() === 'e') {
+          advanceDialogue();
+        }
+      } else if (state.mode === "CARD_SELECT") {
+        if (e.key === '1') selectMeal("Herbal Bowl");
+        if (e.key === '2') selectMeal("Spicy Bowl");
+      } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        if (e.key === ' ' || e.key === 'Enter') actionContinue();
+        if (e.key.toLowerCase() === 'r') actionReplay();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      state.keys[e.key.toLowerCase()] = false;
+    });
+
+    // Mouse tracking with canvas scaling
+    function getCanvasCoords(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return {
+        x: (evt.clientX - rect.left) * scaleX,
+        y: (evt.clientY - rect.top) * scaleY
+      };
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      const pos = getCanvasCoords(e);
+      state.mouse.x = pos.x;
+      state.mouse.y = pos.y;
+
+      state.hoverCard = null;
+      state.hoverBtn = null;
+
+      if (state.mode === "CARD_SELECT") {
+        // Herbal Card (x: 830-930, y: 575-675)
+        if (pos.x >= 830 && pos.x <= 930 && pos.y >= 575 && pos.y <= 675) {
+          state.hoverCard = "herbal";
+        } else if (pos.x >= 1030 && pos.x <= 1130 && pos.y >= 575 && pos.y <= 675) {
+          state.hoverCard = "spicy";
+        }
+      } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        if (pos.x >= 920 && pos.x <= 1160 && pos.y >= 615 && pos.y <= 675) {
+          state.hoverBtn = "continue";
+        } else if (pos.x >= 745 && pos.x <= 815 && pos.y >= 615 && pos.y <= 675) {
+          state.hoverBtn = "replay";
+        }
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      const pos = getCanvasCoords(e);
+      if (state.mode === "EXPLORE") {
+        const dSol = Math.hypot(pos.x - state.sol.x, pos.y - state.sol.y);
+        const dMiraSol = Math.hypot(state.mira.x - state.sol.x, state.mira.y - state.sol.y);
+        if (dSol < 100 && dMiraSol < 260) {
+          startDialogue();
+        }
+      } else if (state.mode === "DIALOGUE") {
+        advanceDialogue();
+      } else if (state.mode === "CARD_SELECT") {
+        if (state.hoverCard === "herbal") selectMeal("Herbal Bowl");
+        if (state.hoverCard === "spicy") selectMeal("Spicy Bowl");
+      } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        if (state.hoverBtn === "continue") actionContinue();
+        if (state.hoverBtn === "replay") actionReplay();
+      }
+    });
+
+    function startDialogue() {
+      state.mode = "DIALOGUE";
+      state.dialoguePage = 0;
+      state.promptVisible = false;
+      state.sol.sprite = "sol_talk";
+      state.crystalStage = 1;
+      audio.playChime(620, 0.3);
+    }
+
+    function advanceDialogue() {
+      state.dialoguePage++;
+      audio.playChime(580, 0.25);
+      if (state.dialoguePage === 1) {
+        state.sol.sprite = "sol_talk";
+      } else if (state.dialoguePage === 2) {
+        state.mode = "CARD_SELECT";
+        state.lumi.sprite = "lumi_happy";
+      }
+    }
+
+    function selectMeal(choice) {
+      state.orderChoice = choice;
+      state.mode = "CELEBRATE";
+
+      if (choice === "Spicy Bowl") {
+        state.sol.sprite = "sol_cheer";
+        state.mira.sprite = "mira_bow";
+        state.lumi.sprite = "lumi_sparkle";
+        state.crystalStage = 3;
+        state.qualityScore = 20;
+        audio.playCelebration();
+
+        // Confetti burst
+        for (let i = 0; i < 45; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const spd = 120 + Math.random() * 320;
+          state.confetti.push({
+            x: 1045,
+            y: 380,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd - 120,
+            rot: Math.random() * 360,
+            rotSpeed: (Math.random() - 0.5) * 360,
+            life: 2.2,
+            scale: 0.10 + Math.random() * 0.08
+          });
+        }
+      } else {
+        state.sol.sprite = "sol_smile";
+        state.mira.sprite = "mira_bow";
+        state.lumi.sprite = "lumi_happy";
+        state.crystalStage = 2;
+        state.qualityScore = 15;
+        audio.playChime(750, 0.5);
+
+        for (let i = 0; i < 25; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const spd = 100 + Math.random() * 200;
+          state.confetti.push({
+            x: 1045,
+            y: 380,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd - 80,
+            rot: Math.random() * 360,
+            rotSpeed: (Math.random() - 0.5) * 200,
+            life: 2.0,
+            scale: 0.08 + Math.random() * 0.06
+          });
+        }
+      }
+    }
+
+    function actionContinue() {
+      state.mode = "COMPLETE";
+      audio.playChime(880, 0.4);
+    }
+
+    function actionReplay() {
+      state.mode = "EXPLORE";
+      state.dialoguePage = 0;
+      state.orderChoice = null;
+      state.qualityScore = 10;
+      state.crystalStage = 0;
+      state.sol.sprite = "sol_idle";
+      state.mira.sprite = "mira_idle";
+      state.lumi.sprite = "lumi_float";
+      state.mira.x = 520;
+      state.mira.y = 430;
+      state.confetti = [];
+      audio.playChime(440, 0.2);
+    }
+
+    // --- Main Game Loop ---
+    let lastTime = performance.now();
+
+    function update(dt) {
+      state.time += dt;
+
+      // Fade-in
+      if (state.fadeAlpha > 0) {
+        state.fadeAlpha = Math.max(0, state.fadeAlpha - dt * 1.5);
+      }
+
+      // Rain animation
+      for (const r of state.rain) {
+        r.y += r.speed * dt;
+        r.x -= 20 * dt;
+        if (r.y > 310) {
+          r.y = 60;
+          r.x = 350 + Math.random() * 570;
+        }
+      }
+
+      // Mira Movement
+      if (state.mode === "EXPLORE") {
+        let vx = 0;
+        let vy = 0;
+        if (state.keys['a'] || state.keys['arrowleft']) { vx -= state.mira.speed; state.mira.facingRight = false; }
+        if (state.keys['d'] || state.keys['arrowright']) { vx += state.mira.speed; state.mira.facingRight = true; }
+        if (state.keys['w'] || state.keys['arrowup']) { vy -= state.mira.speed; }
+        if (state.keys['s'] || state.keys['arrowdown']) { vy += state.mira.speed; }
+
+        state.mira.x = Math.max(180, Math.min(1140, state.mira.x + vx * dt));
+        state.mira.y = Math.max(300, Math.min(540, state.mira.y + vy * dt));
+
+        const isMoving = (vx !== 0 || vy !== 0);
+        if (isMoving) {
+          state.mira.animTimer += dt;
+          if (state.mira.animTimer >= 0.15) {
+            state.mira.animTimer = 0;
+            state.mira.walkFrame = (state.mira.walkFrame + 1) % 2;
+            state.mira.sprite = state.mira.walkFrame === 0 ? "mira_walk1" : "mira_walk2";
+          }
+        } else {
+          state.mira.sprite = "mira_idle";
+        }
+
+        // Check proximity to Sol
+        const distToSol = Math.hypot(state.mira.x - state.sol.x, state.mira.y - state.sol.y);
+        state.promptVisible = (distToSol < 260);
+        state.lumi.sprite = state.promptVisible ? "lumi_point" : "lumi_float";
+      }
+
+      // Smooth Lumi following
+      const targetLumiX = state.mira.x + (state.mira.facingRight ? -45 : 45);
+      const targetLumiY = state.mira.y - 75 + Math.sin(state.time * 3.5) * 8;
+      state.lumi.x += (targetLumiX - state.lumi.x) * 0.10;
+      state.lumi.y += (targetLumiY - state.lumi.y) * 0.10;
+
+      // Glow particles
+      for (const g of state.glow) {
+        g.angle += g.speed * dt;
+      }
+
+      // Confetti
+      for (let i = state.confetti.length - 1; i >= 0; i--) {
+        const c = state.confetti[i];
+        c.x += c.vx * dt;
+        c.vy += 300 * dt; // gravity
+        c.y += c.vy * dt;
+        c.rot += c.rotSpeed * dt;
+        c.life -= dt;
+        if (c.life <= 0) state.confetti.splice(i, 1);
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, 1280, 720);
+
+      // 1. Background
+      ctx.drawImage(assets.bg, 0, 0, 1280, 720);
+
+      // 2. Rain on Windows
+      ctx.save();
+      for (const r of state.rain) {
+        ctx.globalAlpha = r.alpha;
+        ctx.drawImage(assets.rain_drop, r.x, r.y, 20, 20);
+      }
+      ctx.restore();
+
+      // 3. Candle Glow on Tables
+      const flicker1 = Math.sin(state.time * 7) * 2;
+      const flicker2 = Math.cos(state.time * 6) * 2;
+      ctx.drawImage(assets.candle, 50, 425 + flicker1, 32, 48);
+      ctx.drawImage(assets.candle, 720, 385 + flicker2, 28, 42);
+      ctx.drawImage(assets.candle, 860, 575 + flicker1, 34, 50);
+
+      // 4. Sol Seated at Dining Table
+      const solImg = assets[state.sol.sprite];
+      const solH = 190;
+      const solW = solImg.width * (solH / solImg.height);
+      ctx.drawImage(solImg, state.sol.x - solW / 2, state.sol.y - solH / 2, solW, solH);
+
+      // 5. Mira Walking on Carpet
+      const miraImg = assets[state.mira.sprite];
+      const miraH = 210;
+      const miraW = miraImg.width * (miraH / miraImg.height);
+      ctx.save();
+      ctx.translate(state.mira.x, state.mira.y);
+      if (!state.mira.facingRight) ctx.scale(-1, 1);
+      ctx.drawImage(miraImg, -miraW / 2, -miraH / 2, miraW, miraH);
+      ctx.restore();
+
+      // 6. Lumi Floating Companion
+      const lumiImg = assets[state.lumi.sprite];
+      const lumiH = 85;
+      const lumiW = lumiImg.width * (lumiH / lumiImg.height);
+      ctx.save();
+      ctx.translate(state.lumi.x, state.lumi.y);
+      if (!state.mira.facingRight) ctx.scale(-1, 1);
+      ctx.drawImage(lumiImg, -lumiW / 2, -lumiH / 2, lumiW, lumiH);
+      ctx.restore();
+
+      // 7. Glow particles around Lumi
+      for (const g of state.glow) {
+        const gx = state.lumi.x + Math.cos(g.angle) * g.radius;
+        const gy = state.lumi.y + Math.sin(g.angle) * (g.radius * 0.7);
+        ctx.save();
+        ctx.globalAlpha = 0.6 + 0.3 * Math.sin(g.angle * 2);
+        ctx.drawImage(assets.glow_particle, gx - 10, gy - 10, 20, 20);
+        ctx.restore();
+      }
+
+      // 8. Aura Crystal floating near Sol
+      const crystalKey = `crystal_${state.crystalStage}`;
+      const crystImg = assets[crystalKey];
+      const crH = 75;
+      const crW = crystImg.width * (crH / crystImg.height);
+      const crHover = Math.sin(state.time * 2.5) * 5;
+      ctx.drawImage(crystImg, 1045 - crW / 2, 380 - crH / 2 + crHover, crW, crH);
+
+      // 9. [E] Interact prompt if near Sol
+      if (state.promptVisible && state.mode === "EXPLORE") {
+        const eHover = Math.sin(state.time * 5) * 6;
+        ctx.drawImage(assets.interact_key, 1025, 310 + eHover, 44, 42);
+
+        // Label
+        ctx.fillStyle = "rgba(12, 35, 38, 0.85)";
+        ctx.strokeStyle = "#e5b94c";
+        ctx.lineWidth = 1;
+        roundRect(ctx, 975, 360 + eHover, 140, 24, 6, true, true);
+        ctx.fillStyle = "#fff5dc";
+        ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Press [E] to talk", 1045, 376 + eHover);
+      }
+
+      // 10. Confetti Particles
+      for (const c of state.confetti) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.rotate((c.rot * Math.PI) / 180);
+        ctx.globalAlpha = Math.min(1.0, c.life);
+        ctx.drawImage(assets.confetti, -14, -14, 28, 28);
+        ctx.restore();
+      }
+
+      // 11. Top HUD
+      drawHUD();
+
+      // 12. Bottom Dialogue System & Meal Cards
+      if (state.mode !== "EXPLORE") {
+        drawDialogue();
+      }
+
+      // 13. Fade transition overlay
+      if (state.fadeAlpha > 0) {
+        ctx.fillStyle = `rgba(0, 0, 0, ${state.fadeAlpha})`;
+        ctx.fillRect(0, 0, 1280, 720);
+      }
+    }
+
+    function drawHUD() {
+      // Score Banner
+      ctx.fillStyle = "rgba(12, 32, 35, 0.88)";
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 1020, 20, 230, 42, 8, true, true);
+      ctx.fillStyle = "#99f6e4";
+      ctx.font = "bold 13px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(`Quality: ${state.qualityScore}/100`, 1135, 46);
+    }
+
+    function drawDialogue() {
+      // Main container
+      const boxX = 40;
+      const boxY = 505;
+      const boxW = 1200;
+      const boxH = 185;
+
+      ctx.fillStyle = "rgba(14, 36, 38, 0.94)";
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 3;
+      roundRect(ctx, boxX, boxY, boxW, boxH, 16, true, true);
+
+      ctx.strokeStyle = "rgba(40, 95, 95, 0.7)";
+      ctx.lineWidth = 1;
+      roundRect(ctx, boxX + 4, boxY + 4, boxW - 8, boxH - 8, 14, false, true);
+
+      // Speaker Name Tag
+      let speaker = "Mira";
+      let tagBg = "#186c72";
+      if (state.dialoguePage === 1 || state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        speaker = "Sol";
+        tagBg = "#823026";
+      } else if (state.dialoguePage === 2) {
+        speaker = "Lumi";
+        tagBg = "#a06e19";
+      }
+
+      ctx.fillStyle = tagBg;
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 60, 478, 150, 36, 10, true, true);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 15px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(speaker, 135, 502);
+
+      // Content per page
+      ctx.textAlign = "left";
+      if (state.dialoguePage === 0) {
+        ctx.fillStyle = "#f5fafa";
+        ctx.font = "bold 17px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Good evening! You must be Sol -- welcome in from the rain.", 75, 555);
+        ctx.font = "16px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("What can I get started for you tonight?", 75, 590);
+        drawAdvanceHint("[Click / Space / Enter to continue]");
+      } else if (state.dialoguePage === 1) {
+        ctx.fillStyle = "#fff0e6";
+        ctx.font = "16px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("It's quite chilly out there tonight... My crystal pendant feels so dim and cold.", 75, 555);
+        ctx.fillStyle = "#ffd796";
+        ctx.font = "bold 17px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("I'm really craving something comforting, vibrant, and warming to lift my spirits!", 75, 590);
+        drawAdvanceHint("[Click / Space / Enter to select meal]");
+      } else if (state.dialoguePage === 2 && state.mode === "CARD_SELECT") {
+        ctx.fillStyle = "#ffebb4";
+        ctx.font = "italic 15px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Lumi whispers: 'Sol mentioned the cold rain and wanting something warming!'", 75, 545);
+        ctx.fillStyle = "#f5fafa";
+        ctx.font = "bold 17px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Choose a meal card to prepare for Sol:", 75, 580);
+
+        // Meal Cards
+        drawMealCard(880, 625, "herbal", "1. Herbal Bowl", assets.herbal_card, state.hoverCard === "herbal");
+        drawMealCard(1080, 625, "spicy", "2. Spicy Bowl (Hint!)", assets.spicy_card, state.hoverCard === "spicy");
+      } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        ctx.fillStyle = "#fff5c8";
+        ctx.font = "bold 17px 'Plus Jakarta Sans', sans-serif";
+        if (state.orderChoice === "Spicy Bowl") {
+          ctx.fillText("Sol smiles brightly: 'Ah, ember stew with warming chili peppers! Exactly what I need!'", 75, 555);
+          ctx.fillStyle = "#b4fade";
+          ctx.font = "16px 'Plus Jakarta Sans', sans-serif";
+          ctx.fillText("The Aura Crystal begins to glow with a radiant amber flame. (+10 Quality Score)", 75, 590);
+        } else {
+          ctx.fillText("Sol nods gently: 'A soothing herbal bowl with fresh forest greens and earthy mushrooms.'", 75, 555);
+          ctx.fillStyle = "#b4fade";
+          ctx.font = "16px 'Plus Jakarta Sans', sans-serif";
+          ctx.fillText("The Aura Crystal hums peacefully with a tranquil teal glow. (+10 Quality Score)", 75, 590);
+        }
+
+        // Action Buttons
+        const cHover = (state.hoverBtn === "continue");
+        const cScale = cHover ? 1.08 : 1.0;
+        ctx.drawImage(assets.btn_continue, 960 - (38 * cScale), 645 - (34 * cScale), 76 * cScale, 68 * cScale);
+        ctx.fillStyle = "#f0fdf4";
+        ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Continue to Scene 2", 1015, 650);
+
+        const rHover = (state.hoverBtn === "replay");
+        const rScale = rHover ? 1.08 : 1.0;
+        ctx.drawImage(assets.btn_replay, 780 - (35 * rScale), 645 - (32 * rScale), 70 * rScale, 64 * rScale);
+        ctx.fillStyle = "#c8dcdc";
+        ctx.font = "11px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Replay", 780, 680);
+      }
+    }
+
+    function drawMealCard(x, y, type, label, img, isHover) {
+      const scale = isHover ? 1.12 : 1.0;
+      const w = 84 * scale;
+      const h = 94 * scale;
+
+      ctx.fillStyle = (type === "spicy") ? "rgba(55, 25, 20, 0.95)" : "rgba(18, 55, 50, 0.95)";
+      ctx.strokeStyle = isHover ? "#ffe650" : (type === "spicy" ? "#dc6e50" : "#78c8a0");
+      ctx.lineWidth = isHover ? 3 : 2;
+
+      roundRect(ctx, x - w / 2 - 6, y - h / 2 - 6, w + 12, h + 12, 10, true, true);
+      ctx.drawImage(img, x - w / 2, y - h / 2 - 6, w, h - 16);
+
+      ctx.fillStyle = (type === "spicy") ? "#ffd2a0" : "#b4f5d2";
+      ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x, y + h / 2 + 10);
+    }
+
+    function drawAdvanceHint(text) {
+      const blink = Math.sin(state.time * 5) > 0;
+      ctx.fillStyle = blink ? "#e5b94c" : "#a08c46";
+      ctx.font = "bold 12px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(text, 1200, 665);
+    }
+
+    function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    function gameLoop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+      update(dt);
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function initGame() {
+      requestAnimationFrame((now) => {
+        lastTime = now;
+        gameLoop(now);
+      });
+    }
+  </script>
+</body>
+</html>

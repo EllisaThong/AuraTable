@@ -1,0 +1,2613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AuraTable • 4-Scene Interactive Dining Experience</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Plus+Jakarta+Sans:wght@400;600;700&family=VT323&display=swap');
+
+    :root {
+      --bg-dark: #080f12;
+      --panel-teal: rgba(14, 38, 42, 0.94);
+      --gold-accent: #e5b94c;
+      --gold-glow: rgba(229, 185, 76, 0.45);
+      --teal-light: #2dd4bf;
+      --text-main: #f0fdfa;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background: radial-gradient(circle at center, #13242a 0%, var(--bg-dark) 100%);
+      color: var(--text-main);
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    #game-container {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      max-width: 96vw;
+      max-height: 94vh;
+      aspect-ratio: 16 / 9;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 0 2px rgba(229, 185, 76, 0.4);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    #audio-toggle {
+      position: absolute;
+      top: 16px;
+      right: 280px;
+      background: rgba(14, 38, 42, 0.88);
+      border: 1px solid var(--gold-accent);
+      color: var(--gold-accent);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      backdrop-filter: blur(4px);
+      transition: all 0.2s ease;
+      z-index: 10;
+    }
+
+    #audio-toggle:hover {
+      background: var(--gold-accent);
+      color: #080f12;
+      box-shadow: 0 0 12px var(--gold-glow);
+    }
+
+    #scene-indicator {
+      position: absolute;
+      top: 16px;
+      left: 20px;
+      background: rgba(14, 38, 42, 0.9);
+      border: 1px solid rgba(229, 185, 76, 0.5);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #e5b94c;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(4px);
+      z-index: 10;
+    }
+
+    #instructions-modal {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 24, 28, 0.88);
+      border: 1px solid rgba(45, 212, 191, 0.35);
+      padding: 6px 18px;
+      border-radius: 20px;
+      font-size: 12px;
+      color: #99f6e4;
+      pointer-events: none;
+      backdrop-filter: blur(4px);
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="scene-indicator">Scene 1: The Welcome Table</div>
+    <button id="audio-toggle">🔊 Atmosphere Audio: On</button>
+    <canvas id="gameCanvas" width="1280" height="720"></canvas>
+    <div id="instructions-modal">WASD: Move Mira • Approach Sol for [E] Dialogue • Click cards to order</div>
+  </div>
+
+  <script>
+    class AudioManager {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+        this.rainGain = null;
+      }
+
+      init() {
+        if (this.ctx) return;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioCtx();
+
+        const bufferSize = this.ctx.sampleRate * 2;
+        const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        let lastOut = 0.0;
+        for (let i = 0; i < bufferSize; i++) {
+          const white = Math.random() * 2 - 1;
+          output[i] = (lastOut + (0.02 * white)) / 1.02;
+          lastOut = output[i];
+        }
+
+        const rainSource = this.ctx.createBufferSource();
+        rainSource.buffer = noiseBuffer;
+        rainSource.loop = true;
+
+        const rainFilter = this.ctx.createBiquadFilter();
+        rainFilter.type = 'lowpass';
+        rainFilter.frequency.value = 850;
+
+        this.rainGain = this.ctx.createGain();
+        this.rainGain.gain.value = 0.04;
+
+        rainSource.connect(rainFilter);
+        rainFilter.connect(this.rainGain);
+        this.rainGain.connect(this.ctx.destination);
+        rainSource.start();
+      }
+
+      playChime(freq = 520, duration = 0.35) {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.4, this.ctx.currentTime + duration);
+
+        gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+      }
+
+      playChop() {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(320, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(80, this.ctx.currentTime + 0.08);
+
+        gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.08);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.08);
+      }
+
+      playWater() {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(600 + Math.random() * 200, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(300, this.ctx.currentTime + 0.12);
+
+        gain.gain.setValueAtTime(0.06, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.12);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.12);
+      }
+
+      playCelebration() {
+        if (!this.ctx || this.muted) return;
+        const notes = [440, 554, 659, 880, 1108];
+        notes.forEach((note, i) => {
+          setTimeout(() => this.playChime(note, 0.5), i * 100);
+        });
+      }
+
+      // --- Scene 2 Storyboard Audio ---
+      playBasketRustle() {
+        if (!this.ctx || this.muted) return;
+        const bufferSize = Math.floor(this.ctx.sampleRate * 0.12);
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.3));
+        }
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = 1400;
+        filter.Q.value = 1.8;
+        const gain = this.ctx.createGain();
+        gain.gain.value = 0.08;
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.ctx.destination);
+        noise.start();
+      }
+
+      startWaterLoop() {
+        if (!this.ctx || this.muted || this.waterLoopActive) return;
+        this.waterLoopActive = true;
+        const bufferSize = this.ctx.sampleRate * 2;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+        this.waterSource = this.ctx.createBufferSource();
+        this.waterSource.buffer = buffer;
+        this.waterSource.loop = true;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = 950;
+        filter.Q.value = 1.2;
+        this.waterGain = this.ctx.createGain();
+        this.waterGain.gain.setValueAtTime(0.001, this.ctx.currentTime);
+        this.waterGain.gain.linearRampToValueAtTime(0.06, this.ctx.currentTime + 0.15);
+        this.waterSource.connect(filter);
+        filter.connect(this.waterGain);
+        this.waterGain.connect(this.ctx.destination);
+        this.waterSource.start();
+      }
+
+      stopWaterLoop() {
+        if (!this.waterLoopActive || !this.waterGain || !this.ctx) return;
+        this.waterLoopActive = false;
+        try {
+          this.waterGain.gain.linearRampToValueAtTime(0.001, this.ctx.currentTime + 0.15);
+          setTimeout(() => {
+            if (this.waterSource) {
+              try { this.waterSource.stop(); } catch (e) {}
+              this.waterSource = null;
+            }
+          }, 180);
+        } catch (e) {}
+      }
+
+      playKnifeTap(pitchOffset = 0) {
+        if (!this.ctx || this.muted) return;
+        const baseFreq = 320 + (pitchOffset % 3) * 35;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(70, this.ctx.currentTime + 0.07);
+
+        gain.gain.setValueAtTime(0.18, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.07);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.07);
+      }
+
+      playSuccessBell() {
+        if (!this.ctx || this.muted) return;
+        const playTone = (freq, delay) => {
+          setTimeout(() => {
+            if (!this.ctx || this.muted) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+            gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.45);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.45);
+          }, delay);
+        };
+        playTone(784, 0);   // G5
+        playTone(1046, 120); // C6
+      }
+
+      playSoftError() {
+        if (!this.ctx || this.muted) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(190, this.ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(130, this.ctx.currentTime + 0.22);
+        gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.22);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.22);
+      }
+
+      toggleMute() {
+        this.muted = !this.muted;
+        if (this.rainGain) {
+          this.rainGain.gain.value = this.muted ? 0 : 0.04;
+        }
+        if (this.waterGain) {
+          this.waterGain.gain.value = this.muted ? 0 : 0.06;
+        }
+        return !this.muted;
+      }
+    }
+
+    const audio = new AudioManager();
+    const audioBtn = document.getElementById('audio-toggle');
+    const audioToggle = audioBtn;
+    const sceneIndicator = document.getElementById('scene-indicator');
+    const instructionsModal = document.getElementById('instructions-modal');
+
+    audioBtn.addEventListener('click', () => {
+      audio.init();
+      const active = audio.toggleMute();
+      audioBtn.textContent = active ? '🔊 Atmosphere Audio: On' : '🔇 Atmosphere Audio: Muted';
+    });
+
+    window.addEventListener('keydown', () => audio.init(), { once: true });
+    window.addEventListener('click', () => audio.init(), { once: true });
+
+    // --- Image Loader ---
+    const assets = {};
+    const assetSources = {
+      // Backgrounds
+      bg1: "images/backgrounds/scene_1_welcome_room.png",
+      bg2: "images/backgrounds/scene_2_prep_kitchen.png",
+      bg3: "images/backgrounds/scene_3_living_stove.png",
+      bg4: "images/backgrounds/scene_4_plating_service.png",
+      bg_results: "images/backgrounds/results_screen.png",
+
+      // Characters
+      mira_idle: "images/Characters/extracted/mira_idle.png",
+      mira_walk1: "images/Characters/extracted/mira_walk_1.png",
+      mira_walk2: "images/Characters/extracted/mira_walk_2.png",
+      mira_bow: "images/Characters/extracted/mira_bow.png",
+      mira_celebrate: "images/Characters/extracted/mira_celebrate.png",
+      mira_chop: "images/Characters/extracted/mira_chop.png",
+      mira_stir: "images/Characters/extracted/mira_stir.png",
+      mira_carry: "images/Characters/extracted/mira_carry.png",
+
+      sol_idle: "images/Characters/extracted/sol_idle.png",
+      sol_talk: "images/Characters/extracted/sol_talk.png",
+      sol_smile: "images/Characters/extracted/sol_smile.png",
+      sol_cheer: "images/Characters/extracted/sol_cheer.png",
+      sol_drink: "images/Characters/extracted/sol_drink.png",
+
+      lumi_float: "images/Characters/extracted/lumi_float.png",
+      lumi_point: "images/Characters/extracted/lumi_point.png",
+      lumi_happy: "images/Characters/extracted/lumi_happy.png",
+      lumi_sparkle: "images/Characters/extracted/lumi_sparkle.png",
+      lumi_shock: "images/Characters/extracted/lumi_shock.png",
+
+      crystal_0: "images/Characters/extracted/crystal_stage_0.png",
+      crystal_1: "images/Characters/extracted/crystal_stage_1.png",
+      crystal_2: "images/Characters/extracted/crystal_stage_2.png",
+      crystal_3: "images/Characters/extracted/crystal_stage_3.png",
+
+      // Objects & Props
+      faucet: "images/objects/interactive/faucet.png",
+      cutting_board: "images/objects/interactive/cutting_board.png",
+      knife: "images/objects/interactive/knife.png",
+      ingredient_basket: "images/objects/interactive/ingredient_basket.png",
+      frying_pan: "images/objects/interactive/frying_pan.png",
+      stirring_spoon: "images/objects/interactive/stirring_spoon.png",
+      stove_knob: "images/objects/interactive/stove_heat_knob.png",
+      empty_plate: "images/objects/interactive/empty_plate.png",
+      teal_cloth: "images/objects/trimmed/teal_cloth.png",
+      candle: "images/objects/trimmed/candle.png",
+      recipe_card: "images/objects/trimmed/recipe_card.png",
+
+      // UI
+      interact_key: "images/ui/trimmed/interact_key.png",
+      herbal_card: "images/ui/trimmed/herbal_meal_card.png",
+      spicy_card: "images/ui/trimmed/spicy_meal_card.png",
+      btn_continue: "images/ui/trimmed/continue_button.png",
+      btn_replay: "images/ui/trimmed/replay_button.png",
+      btn_exit: "images/ui/trimmed/exit_button.png",
+
+      // Food Items (Raw, Washed, Chopped)
+      carrot_raw: "images/objects/food/carrot_raw.png",
+      carrot_washed: "images/objects/food/carrot_washed.png",
+      carrot_chopped: "images/objects/food/carrot_chopped.png",
+      potato_raw: "images/objects/food/potato_raw.png",
+      potato_washed: "images/objects/food/potato_washed.png",
+      potato_chopped: "images/objects/food/potato_chopped.png",
+      mushroom_raw: "images/objects/food/mushroom_raw.png",
+      mushroom_washed: "images/objects/food/mushroom_washed.png",
+      mushroom_chopped: "images/objects/food/mushroom_chopped.png",
+      beetroot_raw: "images/objects/food/beetroot_raw.png",
+      beetroot_washed: "images/objects/food/beetroot_washed.png",
+      beetroot_chopped: "images/objects/food/beetroot_chopped.png",
+
+      // Effects
+      rain_drop: "images/effects/trimmed/water_droplet.png",
+      water_droplet: "images/effects/trimmed/water_droplet.png",
+      glow_particle: "images/effects/trimmed/golden_glow_particle.png",
+      confetti: "images/effects/trimmed/confetti_particle.png",
+      steam_puff: "images/effects/trimmed/steam_puff.png",
+      oil_spark: "images/effects/oil_spark.png",
+      veg_fragment: "images/effects/vegetable_fragment.png"
+    };
+
+    let loadedCount = 0;
+    const totalAssets = Object.keys(assetSources).length;
+    for (const [k, src] of Object.entries(assetSources)) {
+      const img = new Image();
+      img.src = src;
+      img.onload = () => {
+        loadedCount++;
+        if (loadedCount === totalAssets) initGame();
+      };
+      assets[k] = img;
+    }
+
+    // --- Canvas & Main Game State ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const state = {
+      scene: 1, // 1: Welcome, 2: Prep Counter, 3: Living Stove, 4: Plate & Serve
+      mode: "EXPLORE", // Scene-specific modes
+      dialoguePage: 0,
+      orderChoice: "Herbal Bowl", // Default
+      qualityScore: 10,
+      prepScore: 0,
+      cookScore: 0,
+      plateScore: 0,
+      fadeAlpha: 1.0,
+      time: 0,
+
+      // Character States
+      mira: {
+        x: 520, y: 430, vx: 0, vy: 0, speed: 210,
+        facingRight: true, animTimer: 0, walkFrame: 0, sprite: "mira_idle"
+      },
+      lumi: { x: 590, y: 360, sprite: "lumi_float" },
+      sol: { x: 1045, y: 515, sprite: "sol_idle" },
+      crystalStage: 0,
+
+      // Particles
+      rain: [], glow: [], confetti: [], steam: [], sparks: [], vegFragments: [],
+
+      // Scene 2: Prep Data
+      prep: {
+        items: [],
+        dragged: null,
+        dragOffsetX: 0,
+        dragOffsetY: 0,
+        sinkWashing: false,
+        washProgress: 0,
+        choppingItem: null,
+        chopCount: 0,
+        knifeAngle: 0,
+        boardShake: 0,
+        complete: false,
+        timingIndicator: 0.5,
+        timingSpeed: 1.8,
+        timingDir: 1,
+        greenGlow: 0,
+        wrongFlashItem: null,
+        wrongFlashTimer: 0,
+        preppedItems: [],
+        floatingTexts: [],
+        slideOffset: 0,
+        waterParticles: [],
+        accuracyHits: 0
+      },
+
+      // Scene 3: Stove Data
+      stove: {
+        heat: 58,
+        targetMin: 45,
+        targetMax: 75,
+        cookTimer: 14.0,
+        stirCooldown: 0,
+        stirAngle: 0,
+        addedItems: 0,
+        burnLevel: 0,
+        complete: false
+      },
+
+      // Scene 4: Plate & Serve Data
+      serve: {
+        foodPlated: false,
+        garnishPlated: false,
+        draggedItem: null,
+        dragOffsetX: 0,
+        dragOffsetY: 0,
+        foodPos: { x: 190, y: 390 },
+        garnishPos: { x: 310, y: 410 },
+        clothPos: { x: 260, y: 490 },
+        spills: [
+          { x: 440, y: 460, cleaned: false },
+          { x: 500, y: 500, cleaned: false },
+          { x: 390, y: 510, cleaned: false }
+        ],
+        phase: "PLATE", // PLATE, CARRY, SERVED, RESULTS
+        complete: false
+      },
+
+      // Input
+      keys: {},
+      mouse: { x: 0, y: 0, isDown: false },
+      hoverCard: null,
+      hoverBtn: null,
+      promptVisible: false
+    };
+
+    // Initialize ambient particles
+    for (let i = 0; i < 35; i++) {
+      state.rain.push({
+        x: 350 + Math.random() * 570,
+        y: 60 + Math.random() * 260,
+        speed: 180 + Math.random() * 140,
+        alpha: 0.5 + Math.random() * 0.4
+      });
+    }
+    for (let i = 0; i < 8; i++) {
+      state.glow.push({
+        angle: Math.random() * Math.PI * 2,
+        speed: 1.5 + Math.random() * 2.0,
+        radius: 32 + Math.random() * 16,
+        alpha: 0.8
+      });
+    }
+
+    function getCanvasCoords(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return {
+        x: (evt.clientX - rect.left) * scaleX,
+        y: (evt.clientY - rect.top) * scaleY
+      };
+    }
+
+    // --- Keyboard Input ---
+    window.addEventListener('keydown', (e) => {
+      state.keys[e.key.toLowerCase()] = true;
+      const key = e.key.toLowerCase();
+
+      if (state.scene === 1) {
+        if (state.mode === "EXPLORE" && key === 'e') {
+          const dx = state.mira.x - state.sol.x;
+          const dy = state.mira.y - state.sol.y;
+          if (Math.hypot(dx, dy) < 240) startDialogue();
+        } else if (state.mode === "DIALOGUE" && (key === ' ' || key === 'enter' || key === 'e')) {
+          advanceDialogue();
+        } else if (state.mode === "CARD_SELECT") {
+          if (key === '1') selectMeal("Herbal Bowl");
+          if (key === '2') selectMeal("Spicy Bowl");
+        } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+          if (key === ' ' || key === 'enter') goToScene(2);
+          if (key === 'r') resetScene1();
+        }
+      } else if (state.scene === 2) {
+        if (state.mode === "PREP") {
+          if (key === ' ' && state.prep.choppingItem) {
+            doChop();
+          }
+        } else if (state.mode === "COMPLETE") {
+          if (key === ' ' || key === 'enter') goToScene(3);
+          if (key === 'r') initScene2();
+        }
+      } else if (state.scene === 3) {
+        if (state.mode === "COOK") {
+          if (key === 'arrowleft' || key === 'a') {
+            state.stove.heat = Math.max(10, state.stove.heat - 6);
+            audio.playChime(300, 0.08);
+          }
+          if (key === 'arrowright' || key === 'd') {
+            state.stove.heat = Math.min(100, state.stove.heat + 6);
+            audio.playChime(540, 0.08);
+          }
+          if (key === 's') doStir();
+          if (key === 'enter') finishCooking();
+        } else if (state.mode === "COMPLETE") {
+          if (key === ' ' || key === 'enter') goToScene(4);
+          if (key === 'r') initScene3();
+        }
+      } else if (state.scene === 4) {
+        if (state.serve.phase === "CARRY" && key === 'e') {
+          const dSol = Math.hypot(state.mira.x - state.sol.x, state.mira.y - state.sol.y);
+          if (dSol < 260) serveDishToSol();
+        } else if (state.serve.phase === "RESULTS") {
+          if (key === 'r') restartGame();
+          if (key === 'escape' || key === 'x') restartGame();
+        }
+      }
+
+      if (key === '5') {
+        state.scene = 4;
+        state.serve.phase = "RESULTS";
+        sceneIndicator.textContent = "Dining Journey Complete!";
+        instructionsModal.textContent = "Thank you for playing AuraTable! Click Replay or Exit to continue.";
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      state.keys[e.key.toLowerCase()] = false;
+    });
+
+    // --- Mouse Move & Tracking ---
+    canvas.addEventListener('mousemove', (e) => {
+      const pos = getCanvasCoords(e);
+      state.mouse.x = pos.x;
+      state.mouse.y = pos.y;
+      state.hoverCard = null;
+      state.hoverBtn = null;
+
+      if (state.scene === 1) {
+        if (state.mode === "CARD_SELECT") {
+          if (pos.x >= 830 && pos.x <= 930 && pos.y >= 575 && pos.y <= 675) state.hoverCard = "herbal";
+          else if (pos.x >= 1030 && pos.x <= 1130 && pos.y >= 575 && pos.y <= 675) state.hoverCard = "spicy";
+        } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+          if (pos.x >= 920 && pos.x <= 1190 && pos.y >= 610 && pos.y <= 680) state.hoverBtn = "continue";
+          if (pos.x >= 745 && pos.x <= 815 && pos.y >= 615 && pos.y <= 680) state.hoverBtn = "replay";
+        }
+      } else if (state.scene === 2) {
+        if (state.prep.dragged) {
+          state.prep.dragged.x = pos.x + state.prep.dragOffsetX;
+          state.prep.dragged.y = pos.y + state.prep.dragOffsetY;
+        }
+        if (state.mode === "COMPLETE") {
+          if (pos.x >= 920 && pos.x <= 1190 && pos.y >= 610 && pos.y <= 680) state.hoverBtn = "continue";
+          if (pos.x >= 745 && pos.x <= 815 && pos.y >= 615 && pos.y <= 680) state.hoverBtn = "replay";
+        }
+      } else if (state.scene === 3) {
+        if (state.mode === "COMPLETE") {
+          if (pos.x >= 920 && pos.x <= 1190 && pos.y >= 610 && pos.y <= 680) state.hoverBtn = "continue";
+          if (pos.x >= 745 && pos.x <= 815 && pos.y >= 615 && pos.y <= 680) state.hoverBtn = "replay";
+        }
+      } else if (state.scene === 4) {
+        if (state.serve.draggedItem === "food") {
+          state.serve.foodPos.x = pos.x + state.serve.dragOffsetX;
+          state.serve.foodPos.y = pos.y + state.serve.dragOffsetY;
+        } else if (state.serve.draggedItem === "garnish") {
+          state.serve.garnishPos.x = pos.x + state.serve.dragOffsetX;
+          state.serve.garnishPos.y = pos.y + state.serve.dragOffsetY;
+        } else if (state.serve.draggedItem === "cloth") {
+          state.serve.clothPos.x = pos.x + state.serve.dragOffsetX;
+          state.serve.clothPos.y = pos.y + state.serve.dragOffsetY;
+          // Wipe spills
+          for (const sp of state.serve.spills) {
+            if (!sp.cleaned && Math.hypot(state.serve.clothPos.x - sp.x, state.serve.clothPos.y - sp.y) < 45) {
+              sp.cleaned = true;
+              audio.playWater();
+              checkPlatingComplete();
+            }
+          }
+        }
+        if (state.serve.phase === "RESULTS") {
+          if (pos.x >= 498 && pos.x <= 628 && pos.y >= 530 && pos.y <= 572) {
+            state.hoverBtn = "replay";
+            canvas.style.cursor = "pointer";
+          } else if (pos.x >= 647 && pos.x <= 777 && pos.y >= 530 && pos.y <= 572) {
+            state.hoverBtn = "exit";
+            canvas.style.cursor = "pointer";
+          } else {
+            state.hoverBtn = null;
+            canvas.style.cursor = "default";
+          }
+        }
+      }
+    });
+
+    // --- Mouse Down / Drag Start ---
+    canvas.addEventListener('mousedown', (e) => {
+      state.mouse.isDown = true;
+      const pos = getCanvasCoords(e);
+
+      if (state.scene === 2 && state.mode === "PREP") {
+        for (const item of state.prep.items) {
+          if (item.status !== "chopped" && item !== state.prep.choppingItem) {
+            if (Math.hypot(pos.x - item.x, pos.y - item.y) < 36) {
+              state.prep.dragged = item;
+              state.prep.dragOffsetX = item.x - pos.x;
+              state.prep.dragOffsetY = item.y - pos.y;
+              audio.playBasketRustle();
+              break;
+            }
+          }
+        }
+        // Click on cutting board to chop
+        if (state.prep.choppingItem && pos.x >= 910 && pos.x <= 1110 && pos.y >= 440 && pos.y <= 570) {
+          doChop();
+        }
+      } else if (state.scene === 3 && state.mode === "COOK") {
+        // Click bowls to add ingredients
+        if (state.stove.addedItems < 3) {
+          const bx = 160 + state.stove.addedItems * 85;
+          const by = 580;
+          if (Math.hypot(pos.x - bx, pos.y - by) < 40) {
+            addStoveIngredient();
+          }
+        }
+        // Click stirring spoon
+        if (Math.hypot(pos.x - 635, pos.y - 425) < 55) {
+          doStir();
+        }
+      } else if (state.scene === 4 && state.serve.phase === "PLATE") {
+        if (!state.serve.foodPlated && Math.hypot(pos.x - state.serve.foodPos.x, pos.y - state.serve.foodPos.y) < 40) {
+          state.serve.draggedItem = "food";
+          state.serve.dragOffsetX = state.serve.foodPos.x - pos.x;
+          state.serve.dragOffsetY = state.serve.foodPos.y - pos.y;
+        } else if (!state.serve.garnishPlated && Math.hypot(pos.x - state.serve.garnishPos.x, pos.y - state.serve.garnishPos.y) < 35) {
+          state.serve.draggedItem = "garnish";
+          state.serve.dragOffsetX = state.serve.garnishPos.x - pos.x;
+          state.serve.dragOffsetY = state.serve.garnishPos.y - pos.y;
+        } else if (Math.hypot(pos.x - state.serve.clothPos.x, pos.y - state.serve.clothPos.y) < 40) {
+          state.serve.draggedItem = "cloth";
+          state.serve.dragOffsetX = state.serve.clothPos.x - pos.x;
+          state.serve.dragOffsetY = state.serve.clothPos.y - pos.y;
+        }
+      }
+    });
+
+    // --- Mouse Up / Drag End ---
+    canvas.addEventListener('mouseup', (e) => {
+      state.mouse.isDown = false;
+      const pos = getCanvasCoords(e);
+
+      if (state.scene === 2 && state.prep.dragged) {
+        const item = state.prep.dragged;
+        const sinkDist = Math.hypot(item.x - 670, item.y - 335);
+        const boardDist = Math.hypot(item.x - 1000, item.y - 505);
+
+        if (sinkDist < 75) {
+          if (!item.isCorrect) {
+            triggerWrongItem(item);
+          } else if (state.prep.washProgress >= 100) {
+            item.status = "washed";
+            item.x = 670;
+            item.y = 335;
+            state.prep.washProgress = 0;
+            state.prep.sinkWashing = false;
+            audio.stopWaterLoop();
+            audio.playSuccessBell();
+            state.prep.floatingTexts.push({ text: "💧 WASHED!", x: 670, y: 310, alpha: 1.0, color: "#2dd4bf" });
+            instructionsModal.textContent = "Washed & clean! Drag to the Cutting Board on the right counter.";
+          } else {
+            item.x = 670;
+            item.y = 335;
+          }
+        } else if (boardDist < 85) {
+          if (!item.isCorrect) {
+            triggerWrongItem(item);
+          } else if (item.status !== "washed") {
+            triggerUnwashedItem(item);
+          } else if (!state.prep.choppingItem) {
+            item.status = "board";
+            item.x = 1000;
+            item.y = 505;
+            state.prep.choppingItem = item;
+            state.prep.chopCount = 0;
+            audio.playKnifeTap(0);
+            instructionsModal.textContent = "Press [SPACE] or Click in the GREEN TIMING ZONE to chop! (0/3 Accurate Chops)";
+          } else {
+            item.x = (item.status === "washed" ? 670 : item.originX);
+            item.y = (item.status === "washed" ? 335 : item.originY);
+          }
+        } else {
+          item.x = (item.status === "washed" ? 670 : item.originX);
+          item.y = (item.status === "washed" ? 335 : item.originY);
+        }
+        state.prep.sinkWashing = false;
+        audio.stopWaterLoop();
+        state.prep.dragged = null;
+      } else if (state.scene === 4 && state.serve.draggedItem) {
+        audio.stopWaterLoop();
+        state.prep.dragged = null;
+      } else if (state.scene === 4 && state.serve.draggedItem) {
+        const plateDistFood = Math.hypot(state.serve.foodPos.x - 580, state.serve.foodPos.y - 480);
+        const plateDistGarnish = Math.hypot(state.serve.garnishPos.x - 580, state.serve.garnishPos.y - 480);
+
+        if (state.serve.draggedItem === "food" && plateDistFood < 90) {
+          state.serve.foodPlated = true;
+          state.serve.foodPos.x = 580;
+          state.serve.foodPos.y = 480;
+          audio.playChime(640, 0.3);
+          spawnGlow(580, 480);
+          checkPlatingComplete();
+        } else if (state.serve.draggedItem === "food") {
+          state.serve.foodPos = { x: 190, y: 390 };
+        }
+
+        if (state.serve.draggedItem === "garnish" && plateDistGarnish < 90) {
+          state.serve.garnishPlated = true;
+          state.serve.garnishPos.x = 580;
+          state.serve.garnishPos.y = 475;
+          audio.playChime(820, 0.3);
+          spawnGlow(580, 475);
+          checkPlatingComplete();
+        } else if (state.serve.draggedItem === "garnish") {
+          state.serve.garnishPos = { x: 310, y: 410 };
+        }
+
+        if (state.serve.draggedItem === "cloth") {
+          state.serve.clothPos = { x: 260, y: 490 };
+        }
+
+        state.serve.draggedItem = null;
+      }
+    });
+
+    // --- Click Handlers ---
+    canvas.addEventListener('click', (e) => {
+      const pos = getCanvasCoords(e);
+
+      if (state.scene === 1) {
+        if (state.mode === "EXPLORE") {
+          const dSol = Math.hypot(pos.x - state.sol.x, pos.y - state.sol.y);
+          const dMiraSol = Math.hypot(state.mira.x - state.sol.x, state.mira.y - state.sol.y);
+          if (dSol < 100 && dMiraSol < 260) startDialogue();
+        } else if (state.mode === "DIALOGUE") {
+          advanceDialogue();
+        } else if (state.mode === "CARD_SELECT") {
+          if (state.hoverCard === "herbal") selectMeal("Herbal Bowl");
+          if (state.hoverCard === "spicy") selectMeal("Spicy Bowl");
+        } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+          if (state.hoverBtn === "continue") goToScene(2);
+          if (state.hoverBtn === "replay") resetScene1();
+        }
+      } else if (state.scene === 2) {
+        if (state.mode === "COMPLETE") {
+          if (state.hoverBtn === "continue") goToScene(3);
+          if (state.hoverBtn === "replay") initScene2();
+        }
+      } else if (state.scene === 3) {
+        if (state.mode === "COMPLETE") {
+          if (state.hoverBtn === "continue") goToScene(4);
+          if (state.hoverBtn === "replay") initScene3();
+        }
+      } else if (state.scene === 4) {
+        if (state.serve.phase === "RESULTS") {
+          if (state.hoverBtn === "replay") {
+            audio.playChime(640, 0.2);
+            restartGame();
+          } else if (state.hoverBtn === "exit") {
+            audio.playChime(480, 0.2);
+            restartGame();
+          }
+        }
+      }
+    });
+
+    // --- Scene Navigation & Transitions ---
+    function goToScene(sceneNum) {
+      state.scene = sceneNum;
+      state.fadeAlpha = 1.0;
+      audio.playChime(760, 0.35);
+
+      if (sceneNum === 2) {
+        initScene2();
+      } else if (sceneNum === 3) {
+        initScene3();
+      } else if (sceneNum === 4) {
+        initScene4();
+      }
+    }
+
+    function resetScene1() {
+      instructionsModal.style.display = "block";
+      sceneIndicator.style.display = "flex";
+      audioToggle.style.display = "flex";
+
+      state.scene = 1;
+      state.mode = "EXPLORE";
+      state.dialoguePage = 0;
+      state.orderChoice = "Herbal Bowl";
+      state.qualityScore = 10;
+      state.crystalStage = 0;
+      state.sol.sprite = "sol_idle";
+      state.mira.sprite = "mira_idle";
+      state.lumi.sprite = "lumi_float";
+      state.mira.x = 520;
+      state.mira.y = 430;
+      state.confetti = [];
+      sceneIndicator.textContent = "Scene 1: The Welcome Table";
+      instructionsModal.textContent = "WASD: Move Mira • Approach Sol for [E] Dialogue • Click cards to order";
+      audio.playChime(440, 0.2);
+    }
+
+    function initScene2() {
+      state.mode = "PREP";
+      state.prep.complete = false;
+      state.prep.choppingItem = null;
+      state.prep.chopCount = 0;
+      state.prep.washProgress = 0;
+      state.prep.dragged = null;
+      state.prep.slideOffset = 1.0; // Camera slide reveal
+      state.prep.greenGlow = 0;
+      state.prep.wrongFlashItem = null;
+      state.prep.wrongFlashTimer = 0;
+      state.prep.preppedItems = [];
+      state.prep.floatingTexts = [];
+      state.prep.waterParticles = [];
+      state.prep.accuracyHits = 0;
+      state.prep.sinkWashing = false;
+      state.mira.sprite = "mira_idle";
+      state.lumi.sprite = "lumi_float";
+
+      sceneIndicator.textContent = "Scene 2: Preparation Counter";
+      instructionsModal.textContent = "Drag 3 recipe ingredients to Sink • Hold over tap to wash • Drag to Board • Press [SPACE] in Green Timing Zone to chop!";
+
+      const isSpicy = (state.orderChoice === "Spicy Bowl");
+      if (!isSpicy) {
+        state.prep.items = [
+          { id: "mush", name: "Forest Mushroom", type: "mushroom", isCorrect: true, status: "basket", originX: 90, originY: 445, x: 90, y: 445, color: "#d97706" },
+          { id: "pot",  name: "Earth Potato",    type: "potato",   isCorrect: true, status: "basket", originX: 140, originY: 445, x: 140, y: 445, color: "#eab308" },
+          { id: "car",  name: "Sweet Carrot",    type: "carrot",   isCorrect: true, status: "basket", originX: 240, originY: 445, x: 240, y: 445, color: "#f97316" },
+          { id: "beet", name: "Spicy Beetroot",  type: "beetroot", isCorrect: false, status: "basket", originX: 290, originY: 445, x: 290, y: 445, color: "#ef4444" }
+        ];
+      } else {
+        state.prep.items = [
+          { id: "beet", name: "Fire Beetroot",   type: "beetroot", isCorrect: true, status: "basket", originX: 90, originY: 445, x: 90, y: 445, color: "#ef4444" },
+          { id: "car",  name: "Spice Carrot",    type: "carrot",   isCorrect: true, status: "basket", originX: 140, originY: 445, x: 140, y: 445, color: "#f97316" },
+          { id: "pot",  name: "Volcano Potato",  type: "potato",   isCorrect: true, status: "basket", originX: 240, originY: 445, x: 240, y: 445, color: "#eab308" },
+          { id: "mush", name: "Forest Mushroom", type: "mushroom", isCorrect: false, status: "basket", originX: 290, originY: 445, x: 290, y: 445, color: "#0284c7" }
+        ];
+      }
+    }
+
+    function initScene3() {
+      state.mode = "COOK";
+      state.stove.heat = 58;
+      state.stove.cookTimer = 14.0;
+      state.stove.addedItems = 0;
+      state.stove.burnLevel = 0;
+      state.stove.complete = false;
+      state.mira.sprite = "mira_stir";
+      state.lumi.sprite = "lumi_happy";
+
+      sceneIndicator.textContent = "Scene 3: The Living Stove";
+      instructionsModal.textContent = "Click bowls to add items • Left/Right: Heat • [S] or Click Spoon to Stir • [Enter] Done";
+    }
+
+    function initScene4() {
+      state.mode = "PLATE";
+      state.serve.phase = "PLATE";
+      state.serve.foodPlated = false;
+      state.serve.garnishPlated = false;
+      state.serve.complete = false;
+      state.serve.foodPos = { x: 190, y: 390 };
+      state.serve.garnishPos = { x: 310, y: 410 };
+      state.serve.clothPos = { x: 260, y: 490 };
+      state.serve.spills = [
+        { x: 440, y: 460, cleaned: false },
+        { x: 500, y: 500, cleaned: false },
+        { x: 390, y: 510, cleaned: false }
+      ];
+      state.mira.x = 420;
+      state.mira.y = 480;
+      state.mira.sprite = "mira_idle";
+      state.sol.sprite = "sol_smile";
+
+      sceneIndicator.textContent = "Scene 4: Plate and Serve";
+      instructionsModal.textContent = "Drag Food & Garnish to Plate • Drag Teal Cloth over spills to wipe clean!";
+    }
+
+    function restartGame() {
+      state.qualityScore = 10;
+      state.prepScore = 0;
+      state.cookScore = 0;
+      state.plateScore = 0;
+      resetScene1();
+    }
+
+    // --- Scene 1 Actions ---
+    function startDialogue() {
+      state.mode = "DIALOGUE";
+      state.dialoguePage = 0;
+      state.promptVisible = false;
+      state.sol.sprite = "sol_talk";
+      state.crystalStage = 1;
+      audio.playChime(620, 0.3);
+    }
+
+    function advanceDialogue() {
+      state.dialoguePage++;
+      audio.playChime(580, 0.25);
+      if (state.dialoguePage === 1) {
+        state.sol.sprite = "sol_talk";
+      } else if (state.dialoguePage === 2) {
+        state.mode = "CARD_SELECT";
+        state.lumi.sprite = "lumi_happy";
+      }
+    }
+
+    function selectMeal(choice) {
+      state.orderChoice = choice;
+      state.mode = "CELEBRATE";
+
+      if (choice === "Spicy Bowl") {
+        state.sol.sprite = "sol_cheer";
+        state.mira.sprite = "mira_bow";
+        state.lumi.sprite = "lumi_sparkle";
+        state.crystalStage = 3;
+        state.qualityScore = 20;
+        audio.playCelebration();
+      } else {
+        state.sol.sprite = "sol_smile";
+        state.mira.sprite = "mira_bow";
+        state.lumi.sprite = "lumi_happy";
+        state.crystalStage = 2;
+        state.qualityScore = 20;
+        audio.playCelebration();
+      }
+
+      for (let i = 0; i < 40; i++) {
+        state.confetti.push({
+          x: 1045 + (Math.random() - 0.5) * 160,
+          y: 460 + (Math.random() - 0.5) * 80,
+          vx: (Math.random() - 0.5) * 180,
+          vy: -150 - Math.random() * 220,
+          rot: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() - 0.5) * 8,
+          alpha: 1.0
+        });
+      }
+    }
+
+    // --- Scene 2 Actions ---
+    function triggerWrongItem(item) {
+      audio.playSoftError();
+      state.lumi.sprite = "lumi_shock";
+      state.prep.wrongFlashItem = item;
+      state.prep.wrongFlashTimer = 1.0;
+      item.x = item.originX;
+      item.y = item.originY;
+      state.prep.floatingTexts.push({
+        text: "❌ WRONG INGREDIENT!",
+        x: item.originX,
+        y: item.originY - 30,
+        alpha: 1.0,
+        color: "#ef4444"
+      });
+      instructionsModal.textContent = "❌ " + item.name + " is not for " + state.orderChoice + "! Check recipe card.";
+      setTimeout(() => {
+        if (state.lumi.sprite === "lumi_shock") state.lumi.sprite = "lumi_float";
+      }, 1200);
+    }
+
+    function triggerUnwashedItem(item) {
+      audio.playSoftError();
+      state.lumi.sprite = "lumi_shock";
+      item.x = item.originX;
+      item.y = item.originY;
+      state.prep.floatingTexts.push({
+        text: "💧 WASH AT SINK FIRST!",
+        x: 800,
+        y: 460,
+        alpha: 1.0,
+        color: "#38bdf8"
+      });
+      instructionsModal.textContent = "Fresh produce must be washed under the sink tap before chopping!";
+      setTimeout(() => {
+        if (state.lumi.sprite === "lumi_shock") state.lumi.sprite = "lumi_float";
+      }, 1200);
+    }
+
+    function doChop() {
+      if (!state.prep.choppingItem) return;
+
+      // Accuracy Timing Zone: center sweet spot (0.32 to 0.68)
+      const inTimingZone = (state.prep.timingIndicator >= 0.32 && state.prep.timingIndicator <= 0.68);
+
+      state.prep.knifeAngle = 35;
+      state.prep.boardShake = 9;
+
+      if (inTimingZone) {
+        state.prep.chopCount++;
+        state.prep.accuracyHits++;
+        state.prep.greenGlow = 0.35; // Brief green glow for accuracy
+        state.mira.sprite = "mira_chop";
+        state.lumi.sprite = "lumi_sparkle";
+        audio.playKnifeTap(state.prep.chopCount);
+
+        // Spawn veg fragments with color & physics
+        for (let i = 0; i < 7; i++) {
+          state.vegFragments.push({
+            x: 800 + (Math.random() - 0.5) * 40,
+            y: 495 + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 160,
+            vy: -110 - Math.random() * 120,
+            rot: Math.random() * Math.PI,
+            alpha: 1.0,
+            color: state.prep.choppingItem.color
+          });
+        }
+
+        state.prep.floatingTexts.push({
+          text: "PERFECT CHOP! 🎯",
+          x: 800,
+          y: 435,
+          alpha: 1.0,
+          color: "#4ade80"
+        });
+
+        if (state.prep.chopCount >= 3) {
+          // Three accurate chops complete the item
+          const finishedItem = state.prep.choppingItem;
+          finishedItem.status = "chopped";
+          state.prep.preppedItems.push(finishedItem);
+          state.prep.choppingItem = null;
+          state.prep.chopCount = 0;
+          state.mira.sprite = "mira_idle";
+          audio.playSuccessBell();
+
+          state.prep.floatingTexts.push({
+            text: "✨ " + finishedItem.name + " DICED!",
+            x: 800,
+            y: 415,
+            alpha: 1.0,
+            color: "#fef08a"
+          });
+
+          // Check if all 3 correct items chopped
+          const correctChopped = state.prep.items.filter(i => i.isCorrect && i.status === "chopped").length;
+          if (correctChopped === 3) {
+            state.prep.complete = true;
+            // prep_score calculated from correct selection (30) + accuracy timing bonus
+            const timingBonus = Math.min(10, state.prep.accuracyHits);
+            state.prepScore = 30 + timingBonus;
+            state.qualityScore += state.prepScore;
+            state.mode = "COMPLETE";
+            state.mira.sprite = "mira_celebrate";
+            state.lumi.sprite = "lumi_sparkle";
+            audio.playCelebration();
+            instructionsModal.textContent = "Ingredients fully prepped! Prep Score: " + state.prepScore + "/40. Click Next to enter the stove.";
+          } else {
+            instructionsModal.textContent = "Ingredient chopped! (" + correctChopped + "/3 prepped) • Select next ingredient.";
+          }
+        }
+      } else {
+        // Missed timing zone
+        audio.playSoftError();
+        audio.playKnifeTap(0);
+        state.lumi.sprite = "lumi_shock";
+        state.prep.floatingTexts.push({
+          text: "MISSED TIMING! ⏱️",
+          x: 800,
+          y: 435,
+          alpha: 1.0,
+          color: "#f87171"
+        });
+        setTimeout(() => {
+          if (state.lumi.sprite === "lumi_shock") state.lumi.sprite = "lumi_float";
+        }, 800);
+      }
+    }
+
+    // --- Scene 3 Actions ---
+    function addStoveIngredient() {
+      state.stove.addedItems++;
+      audio.playWater();
+      audio.playChime(600 + state.stove.addedItems * 100, 0.2);
+      spawnSteam(600, 460);
+      if (state.stove.addedItems === 3) {
+        instructionsModal.textContent = "All ingredients in pan! Keep heat in green zone (45-75%) & stir [S]!";
+      }
+    }
+
+    function doStir() {
+      state.stove.stirAngle += 60;
+      state.mira.sprite = "mira_stir";
+      audio.playChime(500, 0.1);
+      spawnSteam(620, 450);
+      spawnOilSpark(610, 460);
+      if (state.stove.heat > 45 && state.stove.heat < 75) {
+        state.stove.cookTimer = Math.max(0, state.stove.cookTimer - 0.6);
+      }
+    }
+
+    function finishCooking() {
+      if (state.mode !== "COOK") return;
+      state.mode = "COMPLETE";
+      state.stove.complete = true;
+      state.cookScore = 40;
+      state.qualityScore += 40;
+      state.crystalStage = 3;
+      state.lumi.sprite = "lumi_sparkle";
+      audio.playCelebration();
+      instructionsModal.textContent = "Dish cooked to perfection! Click Next to plate and serve Sol!";
+    }
+
+    function spawnSteam(x, y) {
+      for (let i = 0; i < 2; i++) {
+        state.steam.push({
+          x: x + (Math.random() - 0.5) * 60,
+          y: y + (Math.random() - 0.5) * 20,
+          vx: (Math.random() - 0.5) * 20,
+          vy: -40 - Math.random() * 50,
+          size: 28 + Math.random() * 24,
+          alpha: 0.7
+        });
+      }
+    }
+
+    function spawnOilSpark(x, y) {
+      for (let i = 0; i < 3; i++) {
+        state.sparks.push({
+          x: x + (Math.random() - 0.5) * 30,
+          y: y + (Math.random() - 0.5) * 20,
+          vx: (Math.random() - 0.5) * 80,
+          vy: -60 - Math.random() * 70,
+          alpha: 1.0
+        });
+      }
+    }
+
+    function spawnGlow(x, y) {
+      for (let i = 0; i < 8; i++) {
+        state.glow.push({
+          angle: Math.random() * Math.PI * 2,
+          speed: 2.0,
+          radius: 20 + Math.random() * 20,
+          alpha: 1.0
+        });
+      }
+    }
+
+    // --- Scene 4 Actions ---
+    function checkPlatingComplete() {
+      const allSpillsWiped = state.serve.spills.every(s => s.cleaned);
+      if (state.serve.foodPlated && state.serve.garnishPlated && allSpillsWiped && state.serve.phase === "PLATE") {
+        state.serve.phase = "CARRY";
+        state.serve.plateScore = 10;
+        state.qualityScore += 10;
+        state.mira.sprite = "mira_carry";
+        audio.playCelebration();
+        instructionsModal.textContent = "Dish beautifully plated! Walk Mira [WASD] to Sol's table and press [E]!";
+      }
+    }
+
+    function serveDishToSol() {
+      state.serve.phase = "SERVED";
+      state.mira.sprite = "mira_bow";
+      state.sol.sprite = "sol_drink";
+      audio.playCelebration();
+
+      for (let i = 0; i < 60; i++) {
+        state.confetti.push({
+          x: 1045 + (Math.random() - 0.5) * 240,
+          y: 440 + (Math.random() - 0.5) * 120,
+          vx: (Math.random() - 0.5) * 260,
+          vy: -180 - Math.random() * 260,
+          rot: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() - 0.5) * 8,
+          alpha: 1.0
+        });
+      }
+
+      setTimeout(() => {
+        state.sol.sprite = "sol_cheer";
+        state.serve.phase = "RESULTS";
+        sceneIndicator.textContent = "Dining Journey Complete!";
+        instructionsModal.textContent = "Thank you for playing AuraTable! Click Replay to start over.";
+      }, 2200);
+    }
+
+    // --- Game Update Loop ---
+    let lastTime = performance.now();
+
+    function update(dt) {
+      state.time += dt;
+
+      if (state.fadeAlpha > 0) {
+        state.fadeAlpha = Math.max(0, state.fadeAlpha - dt * 2.0);
+      }
+
+      // Mira Movement (Scene 1 & Scene 4 Carry)
+      const canMove = (state.scene === 1 && state.mode === "EXPLORE") || (state.scene === 4 && state.serve.phase === "CARRY");
+      if (canMove) {
+        let dx = 0, dy = 0;
+        if (state.keys['w'] || state.keys['arrowup']) dy -= 1;
+        if (state.keys['s'] || state.keys['arrowdown']) dy += 1;
+        if (state.keys['a'] || state.keys['arrowleft']) dx -= 1;
+        if (state.keys['d'] || state.keys['arrowright']) dx += 1;
+
+        if (dx !== 0 && dy !== 0) {
+          dx *= 0.7071;
+          dy *= 0.7071;
+        }
+
+        if (dx !== 0 || dy !== 0) {
+          state.mira.x += dx * state.mira.speed * dt;
+          state.mira.y += dy * state.mira.speed * dt;
+          if (dx > 0) state.mira.facingRight = true;
+          if (dx < 0) state.mira.facingRight = false;
+
+          state.mira.animTimer += dt;
+          if (state.mira.animTimer >= 0.18) {
+            state.mira.animTimer = 0;
+            state.mira.walkFrame = (state.mira.walkFrame + 1) % 2;
+          }
+          if (state.scene === 4) {
+            state.mira.sprite = "mira_carry";
+          } else {
+            state.mira.sprite = (state.mira.walkFrame === 0) ? "mira_walk1" : "mira_walk2";
+          }
+        } else {
+          if (state.scene === 4 && state.serve.phase === "CARRY") {
+            state.mira.sprite = "mira_carry";
+          } else if (state.scene === 1 && state.mode === "EXPLORE") {
+            state.mira.sprite = "mira_idle";
+          }
+        }
+
+        // Screen bounds
+        state.mira.x = Math.max(120, Math.min(1160, state.mira.x));
+        state.mira.y = Math.max(300, Math.min(620, state.mira.y));
+      }
+
+      // Lumi Floating Motion
+      state.lumi.x = state.mira.x + 65 + Math.sin(state.time * 2.2) * 12;
+      state.lumi.y = state.mira.y - 75 + Math.cos(state.time * 3.1) * 8;
+
+      // Update Rain Droplets
+      for (const r of state.rain) {
+        r.y += r.speed * dt;
+        if (r.y > 330) {
+          r.y = 60 + Math.random() * 30;
+          r.x = 350 + Math.random() * 570;
+        }
+      }
+
+      // Update Confetti
+      for (let i = state.confetti.length - 1; i >= 0; i--) {
+        const c = state.confetti[i];
+        c.x += c.vx * dt;
+        c.y += c.vy * dt;
+        c.vy += (c.col ? 80 : 220) * dt;
+        c.rot += c.rotSpeed * dt;
+        c.alpha -= dt * 0.35;
+        if (c.alpha <= 0 || c.y > 720) state.confetti.splice(i, 1);
+      }
+
+      // Continuous festive confetti in RESULTS phase
+      if (state.scene === 4 && state.serve.phase === "RESULTS" && Math.random() < 0.28) {
+        state.confetti.push({
+          x: Math.random() * 1100 + 90,
+          y: -10,
+          vx: (Math.random() - 0.5) * 50,
+          vy: Math.random() * 70 + 60,
+          rot: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() - 0.5) * 6,
+          alpha: 1.0,
+          col: ['#4de3c8', '#e85d9e', '#9e65d8', '#ea5045', '#ffe050', '#5296e8'][Math.floor(Math.random() * 6)]
+        });
+      }
+
+      // Update Steam
+      for (let i = state.steam.length - 1; i >= 0; i--) {
+        const s = state.steam[i];
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.size += dt * 14;
+        s.alpha -= dt * 0.45;
+        if (s.alpha <= 0) state.steam.splice(i, 1);
+      }
+
+      // Update Sparks
+      for (let i = state.sparks.length - 1; i >= 0; i--) {
+        const sp = state.sparks[i];
+        sp.x += sp.vx * dt;
+        sp.y += sp.vy * dt;
+        sp.vy += 260 * dt;
+        sp.alpha -= dt * 1.5;
+        if (sp.alpha <= 0) state.sparks.splice(i, 1);
+      }
+
+      // Update Veg Fragments
+      for (let i = state.vegFragments.length - 1; i >= 0; i--) {
+        const vf = state.vegFragments[i];
+        vf.x += vf.vx * dt;
+        vf.y += vf.vy * dt;
+        vf.vy += 300 * dt;
+        vf.alpha -= dt * 0.9;
+        if (vf.alpha <= 0) state.vegFragments.splice(i, 1);
+      }
+
+      // Scene 2 Real-Time Updates
+      if (state.scene === 2) {
+        // Timing indicator oscillation
+        state.prep.timingIndicator += state.prep.timingDir * state.prep.timingSpeed * dt;
+        if (state.prep.timingIndicator >= 1.0) {
+          state.prep.timingIndicator = 1.0;
+          state.prep.timingDir = -1;
+        } else if (state.prep.timingIndicator <= 0.0) {
+          state.prep.timingIndicator = 0.0;
+          state.prep.timingDir = 1;
+        }
+
+        // Camera slide reveal decay
+        if (state.prep.slideOffset > 0) state.prep.slideOffset = Math.max(0, state.prep.slideOffset - dt * 2.4);
+
+        // Green glow decay
+        if (state.prep.greenGlow > 0) state.prep.greenGlow = Math.max(0, state.prep.greenGlow - dt * 2.5);
+
+        // Wrong flash decay
+        if (state.prep.wrongFlashTimer > 0) {
+          state.prep.wrongFlashTimer = Math.max(0, state.prep.wrongFlashTimer - dt * 2.0);
+          if (state.prep.wrongFlashTimer <= 0) state.prep.wrongFlashItem = null;
+        }
+
+        // Water particles update
+        for (let i = state.prep.waterParticles.length - 1; i >= 0; i--) {
+          const wp = state.prep.waterParticles[i];
+          wp.x += wp.vx * dt;
+          wp.y += wp.vy * dt;
+          wp.vy += 320 * dt;
+          wp.alpha -= dt * 1.8;
+          if (wp.alpha <= 0 || wp.y > 440) state.prep.waterParticles.splice(i, 1);
+        }
+
+        // Floating texts update
+        for (let i = state.prep.floatingTexts.length - 1; i >= 0; i--) {
+          const ft = state.prep.floatingTexts[i];
+          ft.y -= dt * 38;
+          ft.alpha -= dt * 0.9;
+          if (ft.alpha <= 0) state.prep.floatingTexts.splice(i, 1);
+        }
+
+        // Sink Wash Progress
+        if (state.prep.dragged && state.mouse.isDown) {
+          const item = state.prep.dragged;
+          const sinkDist = Math.hypot(item.x - 525, item.y - 365);
+          if (sinkDist < 75) {
+            if (!item.isCorrect) {
+              triggerWrongItem(item);
+            } else {
+              state.prep.sinkWashing = true;
+              state.prep.washProgress = Math.min(100, state.prep.washProgress + dt * 48);
+              audio.startWaterLoop();
+              state.lumi.sprite = "lumi_happy";
+              if (Math.random() < 0.6) {
+                state.prep.waterParticles.push({
+                  x: 525 + (Math.random() - 0.5) * 26,
+                  y: 390 + (Math.random() - 0.5) * 12,
+                  vx: (Math.random() - 0.5) * 60,
+                  vy: -60 - Math.random() * 80,
+                  alpha: 1.0,
+                  size: 14 + Math.random() * 10
+                });
+              }
+            }
+          } else {
+            if (state.prep.sinkWashing) {
+              state.prep.sinkWashing = false;
+              audio.stopWaterLoop();
+            }
+          }
+        } else {
+          if (state.prep.sinkWashing) {
+            state.prep.sinkWashing = false;
+            audio.stopWaterLoop();
+          }
+        }
+      }
+
+      // Scene 3 Cooking Simulation
+      if (state.scene === 3 && state.mode === "COOK") {
+        if (state.stove.addedItems === 3) {
+          state.stove.cookTimer = Math.max(0, state.stove.cookTimer - dt);
+          spawnSteam(610, 460);
+          if (Math.random() < 0.15) spawnOilSpark(605, 465);
+
+          if (state.stove.cookTimer <= 0) {
+            finishCooking();
+          }
+        }
+      }
+
+      // Recovery of knife and board shake
+      if (state.prep.knifeAngle > 0) state.prep.knifeAngle = Math.max(0, state.prep.knifeAngle - dt * 150);
+      if (state.prep.boardShake > 0) state.prep.boardShake = Math.max(0, state.prep.boardShake - dt * 25);
+    }
+
+    // --- Render Dispatcher ---
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (state.scene === 1) {
+        renderScene1();
+      } else if (state.scene === 2) {
+        renderScene2();
+      } else if (state.scene === 3) {
+        renderScene3();
+      } else if (state.scene === 4) {
+        renderScene4();
+      }
+
+      // Scene transition fade
+      if (state.fadeAlpha > 0) {
+        ctx.fillStyle = "rgba(0, 0, 0, " + state.fadeAlpha + ")";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    // ==========================================
+    // SCENE 1 RENDERER: The Welcome Table
+    // ==========================================
+    function renderScene1() {
+      ctx.drawImage(assets.bg1, 0, 0, canvas.width, canvas.height);
+
+      // Rain
+      for (const r of state.rain) {
+        ctx.globalAlpha = r.alpha;
+        ctx.drawImage(assets.rain_drop, r.x, r.y, 20, 20);
+      }
+      ctx.globalAlpha = 1.0;
+
+      // Candles
+      ctx.drawImage(assets.candle, 45, 430, 30, 44);
+      ctx.drawImage(assets.candle, 720, 390, 30, 44);
+      ctx.drawImage(assets.candle, 860, 580, 30, 44);
+
+      // Sol
+      drawCharacter(assets[state.sol.sprite], state.sol.x, state.sol.y, 160, 190);
+
+      // Mira
+      drawCharacter(assets[state.mira.sprite], state.mira.x, state.mira.y, 140, 210, !state.mira.facingRight);
+
+      // Lumi
+      drawCharacter(assets[state.lumi.sprite], state.lumi.x, state.lumi.y, 75, 85);
+
+      // Crystal
+      const crystalKey = "crystal_" + state.crystalStage;
+      if (assets[crystalKey]) {
+        const cy = 340 + Math.sin(state.time * 2.5) * 6;
+        ctx.drawImage(assets[crystalKey], 1080, cy, 60, 75);
+      }
+
+      // Interact prompt
+      if (state.mode === "EXPLORE") {
+        const dx = state.mira.x - state.sol.x;
+        const dy = state.mira.y - state.sol.y;
+        if (Math.hypot(dx, dy) < 240) {
+          const eBob = Math.sin(state.time * 6) * 4;
+          ctx.drawImage(assets.interact_key, 1020, 400 + eBob, 46, 44);
+        }
+      }
+
+      // Dialogue UI
+      if (state.mode === "DIALOGUE" || state.mode === "CARD_SELECT" || state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        renderDialogueBox();
+      }
+
+      // Confetti
+      renderConfetti();
+    }
+
+    function renderDialogueBox() {
+      ctx.fillStyle = "rgba(14, 38, 42, 0.94)";
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 2.5;
+      roundRect(ctx, 50, 510, 1180, 180, 14, true, true);
+
+      // Speaker Name Tag
+      ctx.fillStyle = "#e5b94c";
+      ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText("SOL (TRAVELER)", 75, 532);
+
+      if (state.mode === "DIALOGUE") {
+        ctx.fillStyle = "#f0fdfa";
+        ctx.font = "18px 'Plus Jakarta Sans', sans-serif";
+        if (state.dialoguePage === 0) {
+          ctx.fillText("Greetings, young chef. It's dreadfully cold and damp outside.", 75, 565);
+          ctx.fillText("I seek a warm, comforting bowl to restore my energy before the mountain trail.", 75, 595);
+          drawAdvanceHint("[Click / Space / Enter to continue]");
+        } else if (state.dialoguePage === 1) {
+          ctx.fillText("What kind of nourishment would you recommend from today's hearth?", 75, 565);
+          ctx.fillText("Something soothing with forest herbs, or rich with warming embers?", 75, 595);
+          drawAdvanceHint("[Click / Space / Enter to choose]");
+        }
+      } else if (state.mode === "CARD_SELECT") {
+        ctx.fillStyle = "#f0fdfa";
+        ctx.font = "18px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Choose Sol's order from the table cards:", 75, 565);
+
+        drawMealCard(880, 600, "herbal", "Herbal Bowl", assets.herbal_card, state.hoverCard === "herbal");
+        drawMealCard(1080, 600, "spicy", "Spicy Bowl", assets.spicy_card, state.hoverCard === "spicy");
+        drawAdvanceHint("[Click / 1 / 2 to select meal]");
+      } else if (state.mode === "CELEBRATE" || state.mode === "COMPLETE") {
+        ctx.fillStyle = "#f0fdfa";
+        ctx.font = "18px 'Plus Jakarta Sans', sans-serif";
+        if (state.orderChoice === "Spicy Bowl") {
+          ctx.fillText("Sol smiles brightly: 'Ah, ember stew with warming peppers! Exactly what I crave!'", 75, 560);
+          ctx.fillStyle = "#b4fade";
+          ctx.font = "15px 'Plus Jakarta Sans', sans-serif";
+          ctx.fillText("The Aura Crystal glows with vibrant amber flame. (+20 Quality Score)", 75, 590);
+        } else {
+          ctx.fillText("Sol nods gently: 'A soothing herbal bowl with fresh greens and earthy mushrooms.'", 75, 560);
+          ctx.fillStyle = "#b4fade";
+          ctx.font = "15px 'Plus Jakarta Sans', sans-serif";
+          ctx.fillText("The Aura Crystal hums peacefully with tranquil teal glow. (+20 Quality Score)", 75, 590);
+        }
+
+        renderNextButton(960, 645, "Next → Scene 2 (Prep Counter)", state.hoverBtn === "continue");
+        renderReplayButton(780, 645, state.hoverBtn === "replay");
+      }
+    }
+
+    // ==========================================
+    // SCENE 2 RENDERER: Preparation Counter
+    // ==========================================
+    function renderScene2() {
+      ctx.drawImage(assets.bg2, 0, 0, canvas.width, canvas.height);
+
+      // 1. Left Counter: Ingredient Baskets
+      ctx.drawImage(assets.ingredient_basket, 80, 440, 130, 95);
+      ctx.drawImage(assets.ingredient_basket, 230, 440, 130, 95);
+
+      // Counter label badge
+      ctx.fillStyle = "rgba(12, 28, 32, 0.82)";
+      roundRect(ctx, 95, 540, 250, 22, 6, true, false);
+      ctx.strokeStyle = "rgba(45, 212, 191, 0.4)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "#a7f3d0";
+      ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("🧺 Fresh Produce Baskets (Drag to Sink)", 220, 555);
+
+      // 2. Center: Sink & Faucet
+      // Faucet mounted directly above sink basin
+      ctx.drawImage(assets.faucet, 495, 265, 60, 95);
+
+      // Water Flow Animation when holding under tap
+      if (state.prep.sinkWashing) {
+        // Stream from faucet down into basin
+        ctx.fillStyle = "rgba(125, 230, 255, 0.75)";
+        const wave = Math.sin(state.time * 24) * 2;
+        ctx.fillRect(522 + wave, 345, 7, 50);
+        ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.fillRect(524 + wave, 345, 3, 50);
+
+        // Water ripple at bottom of stream
+        ctx.strokeStyle = "rgba(165, 243, 252, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(525, 395, 14, 5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Water Droplet Particles splashing at sink
+      for (const wp of state.prep.waterParticles) {
+        ctx.save();
+        ctx.globalAlpha = wp.alpha;
+        if (assets.water_droplet && assets.water_droplet.complete) {
+          ctx.drawImage(assets.water_droplet, wp.x - wp.size / 2, wp.y - wp.size / 2, wp.size, wp.size);
+        } else {
+          ctx.fillStyle = "#38bdf8";
+          ctx.beginPath();
+          ctx.arc(wp.x, wp.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      // Wash Progress Bar at Sink
+      if (state.prep.washProgress > 0) {
+        ctx.fillStyle = "rgba(10, 24, 28, 0.88)";
+        roundRect(ctx, 450, 275, 140, 16, 8, true, false);
+        ctx.strokeStyle = "#0284c7";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = "#2dd4bf";
+        roundRect(ctx, 452, 277, (state.prep.washProgress / 100) * 136, 12, 6, true, false);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 10px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("💧 WASHING " + Math.round(state.prep.washProgress) + "%", 520, 287);
+      }
+
+      // 3. Right Counter: Cutting Board & Knife
+      const bs = state.prep.boardShake;
+      const shX = (Math.random() - 0.5) * bs;
+      const shY = (Math.random() - 0.5) * bs;
+
+      // Green glow for accuracy on chop
+      if (state.prep.greenGlow > 0) {
+        ctx.save();
+        ctx.shadowColor = "#22c55e";
+        ctx.shadowBlur = 35;
+        ctx.fillStyle = "rgba(34, 197, 94, " + (state.prep.greenGlow * 1.6) + ")";
+        roundRect(ctx, 715 + shX, 440 + shY, 190, 125, 12, true, false);
+        ctx.restore();
+      }
+
+      // Cutting Board
+      ctx.drawImage(assets.cutting_board, 720 + shX, 445 + shY, 180, 115);
+
+      // Knife rising & falling on chop
+      ctx.save();
+      ctx.translate(810 + shX, 430 + shY);
+      ctx.rotate(-state.prep.knifeAngle * Math.PI / 180);
+      ctx.drawImage(assets.knife, -15, -20, 85, 45);
+      ctx.restore();
+
+      // 4. Chopping Timing Meter (Accuracy Timing Zone)
+      if (state.prep.choppingItem) {
+        const mx = 715, my = 405, mw = 190, mh = 22;
+        // Meter background
+        ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+        roundRect(ctx, mx, my, mw, mh, 6, true, false);
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Green Sweet Spot (Timing Zone)
+        const zStart = mx + mw * 0.32;
+        const zWidth = mw * 0.36;
+        ctx.fillStyle = "rgba(34, 197, 94, 0.45)";
+        ctx.fillRect(zStart, my + 2, zWidth, mh - 4);
+        ctx.strokeStyle = "#4ade80";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(zStart, my + 2, zWidth, mh - 4);
+
+        ctx.fillStyle = "#bbf7d0";
+        ctx.font = "bold 9px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("TIMING ZONE", zStart + zWidth / 2, my + 14);
+
+        // Oscillating Needle Indicator
+        const indX = mx + state.prep.timingIndicator * mw;
+        ctx.fillStyle = "#facc15";
+        ctx.shadowColor = "#facc15";
+        ctx.shadowBlur = 8;
+        ctx.fillRect(indX - 2, my - 3, 4, mh + 6);
+        ctx.shadowBlur = 0;
+
+        // Chop Count Dots (3 accurate chops required)
+        for (let i = 0; i < 3; i++) {
+          ctx.fillStyle = (i < state.prep.chopCount) ? "#4ade80" : "rgba(255, 255, 255, 0.25)";
+          ctx.beginPath();
+          ctx.arc(780 + i * 30, 436, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Action Prompt
+        ctx.fillStyle = "#fef08a";
+        ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Press [SPACE] or Click in GREEN ZONE to chop!", 810, 395);
+      }
+
+      // 5. Prepped / Sliced Items neatly lined up on counter
+      for (let i = 0; i < state.prep.preppedItems.length; i++) {
+        const pItem = state.prep.preppedItems[i];
+        const px = 920 + i * 44, py = 485;
+        const sprite = assets[pItem.type + "_chopped"];
+        if (sprite && sprite.complete) {
+          ctx.drawImage(sprite, px - 24, py - 24, 48, 48);
+        }
+        ctx.fillStyle = "#fef08a";
+        ctx.font = "bold 9px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("✓ Sliced", px, py + 30);
+      }
+
+      // 6. Draw Unchopped Ingredients
+      for (const item of state.prep.items) {
+        if (item === state.prep.dragged || item.status === "chopped") continue;
+        drawIngredientSprite(item);
+      }
+      if (state.prep.dragged) drawIngredientSprite(state.prep.dragged);
+
+      // 7. Vegetable Fragments particles
+      for (const vf of state.vegFragments) {
+        ctx.save();
+        ctx.fillStyle = vf.color;
+        ctx.globalAlpha = vf.alpha;
+        ctx.translate(vf.x, vf.y);
+        ctx.rotate(vf.rot || 0);
+        ctx.fillRect(-3, -3, 7, 7);
+        ctx.restore();
+      }
+
+      // 8. Floating Texts
+      for (const ft of state.prep.floatingTexts) {
+        ctx.save();
+        ctx.globalAlpha = ft.alpha;
+        ctx.fillStyle = ft.color;
+        ctx.font = "bold 13px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 4;
+        ctx.fillText(ft.text, ft.x, ft.y);
+        ctx.restore();
+      }
+
+      // 9. Characters
+      drawCharacter(assets[state.mira.sprite], 625, 360, 110, 210);
+      drawCharacter(assets[state.lumi.sprite], 690, 275 + Math.sin(state.time * 3) * 6, 65, 80);
+
+      // 10. Recipe Card & Progress Icons at top right
+      ctx.drawImage(assets.recipe_card, 1060, 40, 185, 125);
+      ctx.fillStyle = "#1e293b";
+      ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("RECIPE: " + state.orderChoice.toUpperCase(), 1152, 60);
+
+      // Recipe 3 Ingredients Checklist
+      const recipeItems = state.prep.items.filter(i => i.isCorrect);
+      recipeItems.forEach((ri, idx) => {
+        const ry = 80 + idx * 22;
+        let icon = "⚪";
+        let statusCol = "#64748b";
+        if (ri.status === "chopped") {
+          icon = "⭐";
+          statusCol = "#eab308";
+        } else if (ri.status === "washed" || ri.status === "board") {
+          icon = "💧";
+          statusCol = "#0284c7";
+        }
+
+        ctx.fillStyle = "#334155";
+        ctx.font = "bold 10px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(ri.name.split(' ')[0], 1082, ry);
+
+        ctx.fillStyle = statusCol;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(icon, 1225, ry);
+      });
+
+      // Live Prep Score on Card
+      ctx.fillStyle = "#0f172a";
+      ctx.font = "bold 9px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("PREP SCORE: " + state.prepScore + " / 30", 1152, 152);
+
+      // 11. HUD Top Bar
+      renderSceneHUD("PREPARATION COUNTER", "Order: " + state.orderChoice + "  •  Prep Score: " + state.prepScore + "/30  •  Quality: " + state.qualityScore + "/100");
+
+      // 12. Camera Slide Reveal Animation
+      if (state.prep.slideOffset > 0) {
+        ctx.save();
+        const curW = canvas.width * state.prep.slideOffset;
+        ctx.fillStyle = "#091216";
+        ctx.fillRect(canvas.width - curW, 0, curW, canvas.height);
+
+        // Slide title reveal badge
+        ctx.fillStyle = "#2dd4bf";
+        ctx.font = "bold 22px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Scene 2: Preparation Counter", canvas.width / 2, canvas.height / 2 - 15);
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "14px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText("Select, wash, and precision-chop fresh produce for " + state.orderChoice, canvas.width / 2, canvas.height / 2 + 15);
+        ctx.restore();
+      }
+
+      // 13. Completion Banner
+      if (state.mode === "COMPLETE") {
+        renderCompletionModal(
+          "Ingredients Ready!",
+          "All fresh ingredients washed and precision-chopped to chef standard.",
+          "Prep Score: " + state.prepScore + " / 40  •  Quality Score: " + state.qualityScore + " / 100",
+          "Next → Scene 3 (Living Stove)"
+        );
+      }
+    }
+
+    function drawIngredientSprite(item) {
+      ctx.save();
+
+      // Determine stage: raw in basket -> washed at sink -> chopped on board
+      let stage = "raw";
+      if (item.status === "washed" || item.status === "board") stage = "washed";
+      else if (item.status === "chopped") stage = "chopped";
+
+      const spriteKey = item.type + "_" + stage;
+      const sprite = assets[spriteKey];
+
+      // Red outline for wrong ingredient rejection
+      if (state.prep.wrongFlashItem === item && state.prep.wrongFlashTimer > 0) {
+        ctx.save();
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 3.5;
+        ctx.shadowColor = "#ef4444";
+        ctx.shadowBlur = 16;
+        ctx.strokeRect(item.x - 26, item.y - 26, 52, 52);
+        ctx.restore();
+      }
+
+      // Drag highlight
+      if (state.prep.dragged === item) {
+        ctx.save();
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = "#38bdf8";
+        ctx.shadowBlur = 12;
+        ctx.strokeRect(item.x - 26, item.y - 26, 52, 52);
+        ctx.restore();
+      }
+
+      // Draw pixel art cut-to-size food sprite
+      if (sprite && sprite.complete) {
+        ctx.drawImage(sprite, item.x - 24, item.y - 24, 48, 48);
+      } else {
+        // Fallback circle
+        ctx.fillStyle = item.color;
+        ctx.beginPath();
+        ctx.arc(item.x, item.y, 22, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Label below sprite
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 10px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.shadowColor = "rgba(0,0,0,0.85)";
+      ctx.shadowBlur = 4;
+      ctx.fillText(item.name.split(' ')[0], item.x, item.y + 32);
+
+      if (item.status === "washed") {
+        ctx.fillStyle = "#2dd4bf";
+        ctx.fillText("✓ clean", item.x, item.y + 43);
+      } else if (item.status === "chopped") {
+        ctx.fillStyle = "#e5b94c";
+        ctx.fillText("✓ diced", item.x, item.y + 43);
+      }
+      ctx.restore();
+    }
+
+    // ==========================================
+    // SCENE 3 RENDERER: The Living Stove
+    // ==========================================
+    function renderScene3() {
+      ctx.drawImage(assets.bg3, 0, 0, canvas.width, canvas.height);
+
+      // Frying pan on stove
+      ctx.drawImage(assets.frying_pan, 520, 410, 230, 150);
+
+      // Heat Knob
+      ctx.drawImage(assets.stove_knob, 620, 580, 50, 50);
+
+      // Stirring Spoon with rotation
+      ctx.save();
+      ctx.translate(635, 425);
+      ctx.rotate(state.stove.stirAngle * Math.PI / 180);
+      ctx.drawImage(assets.stirring_spoon, -45, -45, 90, 90);
+      ctx.restore();
+
+      // Prepped bowls waiting to add
+      for (let i = 0; i < 3; i++) {
+        const bx = 160 + i * 85;
+        const by = 580;
+        ctx.fillStyle = (i < state.stove.addedItems) ? "rgba(20, 50, 45, 0.6)" : "rgba(45, 212, 191, 0.85)";
+        ctx.beginPath();
+        ctx.arc(bx, by, 28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(i < state.stove.addedItems ? "Added" : "Bowl " + (i + 1), bx, by + 4);
+        ctx.textAlign = "left";
+      }
+
+      // Steam and Sparks
+      for (const s of state.steam) {
+        ctx.globalAlpha = s.alpha;
+        ctx.drawImage(assets.steam_puff, s.x, s.y, s.size, s.size);
+      }
+      for (const sp of state.sparks) {
+        ctx.globalAlpha = sp.alpha;
+        ctx.drawImage(assets.oil_spark, sp.x, sp.y, 16, 16);
+      }
+      ctx.globalAlpha = 1.0;
+
+      // Heat Wave Overlay (when heat > 70)
+      if (state.stove.heat > 70) {
+        ctx.fillStyle = "rgba(255, 140, 40, 0.15)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // Characters
+      drawCharacter(assets[state.mira.sprite], 390, 340, 140, 210);
+      drawCharacter(assets[state.lumi.sprite], 780, 310, 75, 85);
+
+      // Heat Meter UI
+      ctx.fillStyle = "rgba(14, 38, 42, 0.9)";
+      roundRect(ctx, 480, 560, 320, 24, 10, true, true);
+      // Safe Green Zone
+      ctx.fillStyle = "rgba(16, 185, 129, 0.4)";
+      roundRect(ctx, 480 + 3.2 * 45, 562, 3.2 * 30, 20, 4, true, false);
+      // Active Heat Bar
+      const heatW = (state.stove.heat / 100) * 316;
+      ctx.fillStyle = (state.stove.heat > 75) ? "#ef4444" : (state.stove.heat < 45 ? "#0284c7" : "#10b981");
+      roundRect(ctx, 482, 562, heatW, 20, 6, true, false);
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("HEAT: " + Math.round(state.stove.heat) + "°C  •  TIMER: " + Math.ceil(state.stove.cookTimer) + "s", 640, 576);
+      ctx.textAlign = "left";
+
+      // HUD Top Bar
+      renderSceneHUD("THE LIVING STOVE", "Simmering: " + state.stove.addedItems + "/3 added  •  Score: " + state.qualityScore + "/100");
+
+      // Completion Banner
+      if (state.mode === "COMPLETE") {
+        renderCompletionModal(
+          "Dish Cooked to Perfection!",
+          "The broth radiates warmth, and the aromatics have bloomed.",
+          "Cook Score: 40 / 40  •  Quality Score: " + state.qualityScore + " / 100",
+          "Next → Scene 4 (Plate & Serve)"
+        );
+      }
+    }
+
+    // ==========================================
+    // SCENE 4 RENDERER: Plate and Serve
+    // ==========================================
+    function renderScene4() {
+      if (state.serve.phase === "RESULTS") {
+        renderResultsScreen();
+        return;
+      }
+
+      ctx.drawImage(assets.bg4, 0, 0, canvas.width, canvas.height);
+
+      // Serving Plate
+      ctx.drawImage(assets.empty_plate, 510, 420, 140, 100);
+
+      // Spill spots to clean
+      for (const sp of state.serve.spills) {
+        if (!sp.cleaned) {
+          ctx.fillStyle = "rgba(180, 70, 40, 0.75)";
+          ctx.beginPath();
+          ctx.ellipse(sp.x, sp.y, 18, 12, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Food & Garnish & Cloth
+      if (!state.serve.foodPlated) {
+        ctx.fillStyle = "#f97316";
+        ctx.beginPath();
+        ctx.arc(state.serve.foodPos.x, state.serve.foodPos.y, 28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Cooked Food", state.serve.foodPos.x, state.serve.foodPos.y + 4);
+      } else {
+        ctx.fillStyle = "#f97316";
+        ctx.beginPath();
+        ctx.arc(580, 470, 32, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (!state.serve.garnishPlated) {
+        ctx.fillStyle = "#10b981";
+        ctx.beginPath();
+        ctx.arc(state.serve.garnishPos.x, state.serve.garnishPos.y, 20, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Garnish", state.serve.garnishPos.x, state.serve.garnishPos.y + 4);
+      } else {
+        ctx.fillStyle = "#10b981";
+        ctx.beginPath();
+        ctx.arc(580, 465, 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Teal Cloth
+      ctx.drawImage(assets.teal_cloth, state.serve.clothPos.x - 25, state.serve.clothPos.y - 20, 50, 40);
+
+      // Sol at dining table
+      drawCharacter(assets[state.sol.sprite], 1030, 410, 160, 190);
+
+      // Mira
+      drawCharacter(assets[state.mira.sprite], state.mira.x, state.mira.y, 140, 210, !state.mira.facingRight);
+
+      // Crystal
+      ctx.drawImage(assets.crystal_3, 1080, 310, 70, 90);
+
+      // Serve Prompt near Sol
+      if (state.serve.phase === "CARRY") {
+        const dSol = Math.hypot(state.mira.x - state.sol.x, state.mira.y - state.sol.y);
+        if (dSol < 260) {
+          ctx.drawImage(assets.interact_key, 1000, 350, 46, 44);
+        }
+      }
+
+      // HUD Top Bar
+      renderSceneHUD("PLATE AND SERVE", "Phase: " + state.serve.phase + "  •  Total Score: " + state.qualityScore + "/100");
+
+      renderConfetti();
+    }
+
+    function renderResultsScreen() {
+      // Hide DOM overlays during results screen to match results_screen_final.png
+      instructionsModal.style.display = "none";
+      sceneIndicator.style.display = "none";
+      audioToggle.style.display = "none";
+
+      // 1. Clean Results Background Altar Room
+      ctx.drawImage(assets.bg_results, 0, 0, canvas.width, canvas.height);
+
+      const qs = state.qualityScore >= 20 ? state.qualityScore : 96;
+      let ratingTitle = "RADIANT FEAST!";
+      let ratingCol = "#f3ca52";
+      let solQuote = '"Absolutely delicious!"';
+
+      if (qs >= 70) {
+        ratingTitle = "RADIANT FEAST!";
+        ratingCol = "#f3ca52";
+        solQuote = '"Absolutely delicious!"';
+      } else if (qs >= 45) {
+        ratingTitle = "WARM WELCOME!";
+        ratingCol = "#ffa84a";
+        solQuote = '"A satisfying meal!"';
+      } else {
+        ratingTitle = "FADING EMBERS...";
+        ratingCol = "#9fdad2";
+        solQuote = '"A noble effort."';
+      }
+
+      // 2. Top Header
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#7de3d4";
+      ctx.font = "bold 16px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText("ORDER COMPLETE", 640, 42);
+
+      ctx.fillStyle = ratingCol;
+      ctx.font = "bold 46px 'Plus Jakarta Sans', sans-serif";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(ratingTitle, 640, 92);
+      ctx.restore();
+
+      // 3. Glowing Aura Crystal (Diamond)
+      const cx = 640;
+      const cy = 252 + Math.sin(state.time * 2.0) * 4;
+
+      // Radial Golden Glow
+      ctx.save();
+      const glowGrad = ctx.createRadialGradient(cx, cy, 10, cx, cy, 105);
+      glowGrad.addColorStop(0, "rgba(255, 235, 110, 0.45)");
+      glowGrad.addColorStop(0.5, "rgba(255, 210, 60, 0.18)");
+      glowGrad.addColorStop(1, "rgba(255, 200, 50, 0)");
+      ctx.fillStyle = glowGrad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 105, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Diamond facets
+      const topPt = { x: cx, y: cy - 64 };
+      const botPt = { x: cx, y: cy + 66 };
+      const leftPt = { x: cx - 56, y: cy };
+      const rightPt = { x: cx + 56, y: cy };
+      const centerPt = { x: cx, y: cy };
+
+      // Top-Left facet
+      ctx.fillStyle = "#fee67a";
+      ctx.beginPath();
+      ctx.moveTo(topPt.x, topPt.y);
+      ctx.lineTo(leftPt.x, leftPt.y);
+      ctx.lineTo(centerPt.x, centerPt.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Top-Right facet
+      ctx.fillStyle = "#fed863";
+      ctx.beginPath();
+      ctx.moveTo(topPt.x, topPt.y);
+      ctx.lineTo(rightPt.x, rightPt.y);
+      ctx.lineTo(centerPt.x, centerPt.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Bottom-Left facet
+      ctx.fillStyle = "#fed356";
+      ctx.beginPath();
+      ctx.moveTo(botPt.x, botPt.y);
+      ctx.lineTo(leftPt.x, leftPt.y);
+      ctx.lineTo(centerPt.x, centerPt.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Bottom-Right facet
+      ctx.fillStyle = "#fec946";
+      ctx.beginPath();
+      ctx.moveTo(botPt.x, botPt.y);
+      ctx.lineTo(rightPt.x, rightPt.y);
+      ctx.lineTo(centerPt.x, centerPt.y);
+      ctx.closePath();
+      ctx.fill();
+
+      // White outline & Cross seam
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(topPt.x, topPt.y);
+      ctx.lineTo(rightPt.x, rightPt.y);
+      ctx.lineTo(botPt.x, botPt.y);
+      ctx.lineTo(leftPt.x, leftPt.y);
+      ctx.closePath();
+      ctx.stroke();
+
+      ctx.strokeStyle = "rgba(215, 215, 215, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(topPt.x, topPt.y);
+      ctx.lineTo(botPt.x, botPt.y);
+      ctx.moveTo(leftPt.x, leftPt.y);
+      ctx.lineTo(rightPt.x, rightPt.y);
+      ctx.stroke();
+
+      // Sparkle cross marks around crystal
+      const sparkleList = [
+        { x: cx - 70, y: cy - 12, size: 16 },
+        { x: cx + 60, y: cy - 48, size: 16 },
+        { x: cx - 16, y: cy + 92, size: 12 },
+        { x: cx + 10, y: cy + 112, size: 10 },
+        { x: cx - 84, y: cy + 128, size: 12 },
+        { x: cx + 78, y: cy + 30, size: 14 }
+      ];
+      ctx.strokeStyle = "rgba(255, 245, 165, 0.9)";
+      ctx.lineWidth = 2;
+      for (const sp of sparkleList) {
+        const h = sp.size / 2;
+        ctx.beginPath();
+        ctx.moveTo(sp.x - h, sp.y);
+        ctx.lineTo(sp.x + h, sp.y);
+        ctx.moveTo(sp.x, sp.y - h);
+        ctx.lineTo(sp.x, sp.y + h);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // 4. Lumi Sparkle Floating beside Crystal
+      const lx = 741;
+      const ly = 332 + Math.sin(state.time * 2.8) * 6;
+      ctx.drawImage(assets.lumi_sparkle, lx, ly, 98, 98);
+
+      // 5. Mira Celebrating on Stage Altar
+      ctx.drawImage(assets.mira_celebrate, 580, 385, 180, 205);
+
+      // 6. Confetti Shower
+      renderConfetti();
+
+      // Confetti accent pieces matching reference
+      const staticConfetti = [
+        { x: 460, y: 220, w: 8, h: 12, col: "#4de3c8" },
+        { x: 475, y: 290, w: 7, h: 10, col: "#e85d9e" },
+        { x: 515, y: 375, w: 9, h: 8,  col: "#9e65d8" },
+        { x: 720, y: 310, w: 8, h: 11, col: "#ea5045" },
+        { x: 705, y: 370, w: 7, h: 10, col: "#9e65d8" },
+        { x: 825, y: 290, w: 8, h: 12, col: "#4de3c8" },
+        { x: 835, y: 340, w: 8, h: 8,  col: "#ffe050" },
+        { x: 855, y: 410, w: 7, h: 11, col: "#5296e8" },
+        { x: 790, y: 480, w: 8, h: 12, col: "#ea5045" },
+        { x: 435, y: 430, w: 9, h: 8,  col: "#ffe050" },
+        { x: 380, y: 310, w: 8, h: 12, col: "#e85d9e" },
+        { x: 920, y: 320, w: 8, h: 10, col: "#e85d9e" },
+      ];
+      for (const sc of staticConfetti) {
+        ctx.fillStyle = sc.col;
+        ctx.fillRect(sc.x - sc.w / 2, sc.y - sc.h / 2, sc.w, sc.h);
+      }
+
+      // 7. Interactive Replay & Exit Pill Buttons
+      // Replay button: [498, 530, 130, 42]
+      const isReplayHov = state.hoverBtn === "replay";
+      ctx.fillStyle = isReplayHov ? "#2f8777" : "#257063";
+      ctx.strokeStyle = "#e5c14f";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 498, 530, 130, 42, 8, true, true);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 18px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Replay", 563, 557);
+
+      // Exit button: [647, 530, 130, 42]
+      const isExitHov = state.hoverBtn === "exit";
+      ctx.fillStyle = isExitHov ? "#703f39" : "#59332e";
+      ctx.strokeStyle = "#e5c14f";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 647, 530, 130, 42, 8, true, true);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 18px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Exit", 712, 557);
+
+      // 8. Sol Seated at Dining Table (Bottom Right)
+      ctx.drawImage(assets.sol_cheer, 1002, 502, 210, 214);
+
+      // Sol Speech Bubble: [1000, 462, 220, 44]
+      ctx.fillStyle = "rgba(18, 38, 36, 0.96)";
+      ctx.strokeStyle = "#e5c14f";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 1000, 462, 220, 44, 8, true, true);
+      // Downward pointer beak
+      ctx.beginPath();
+      ctx.moveTo(1035, 506);
+      ctx.lineTo(1030, 516);
+      ctx.lineTo(1045, 506);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(18, 38, 36, 0.96)";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(1035, 506);
+      ctx.lineTo(1030, 516);
+      ctx.lineTo(1045, 506);
+      ctx.strokeStyle = "#e5c14f";
+      ctx.stroke();
+
+      ctx.fillStyle = "#f0faf7";
+      ctx.font = "14px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(solQuote, 1110, 489);
+
+      // 9. Bottom HUD Panel: [250, 580, 790, 136]
+      ctx.fillStyle = "rgba(15, 35, 36, 0.96)";
+      ctx.strokeStyle = "#e5c14f";
+      ctx.lineWidth = 3;
+      roundRect(ctx, 250, 580, 790, 136, 12, true, true);
+
+      // Dividers
+      ctx.strokeStyle = "#2e4d4e";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(415, 595);
+      ctx.lineTo(415, 702);
+      ctx.moveTo(810, 595);
+      ctx.lineTo(810, 702);
+      ctx.stroke();
+
+      // Section 1: FINAL SCORE
+      ctx.fillStyle = "#cce3df";
+      ctx.font = "bold 12px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("FINAL SCORE", 332, 615);
+
+      ctx.fillStyle = "#e5b94c";
+      ctx.font = "bold 48px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(qs.toString(), 310, 668);
+
+      ctx.fillStyle = "#b2d1cb";
+      ctx.font = "bold 17px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("/100", 318, 668);
+
+      // Section 2: Skill Breakdown Bars (Prep / Cook / Plating)
+      const prepVal = state.prepScore ? Math.min(100, Math.round(state.prepScore * 2.5)) : 88;
+      const cookVal = state.cookScore ? Math.min(100, Math.round(state.cookScore * 2.35)) : 94;
+      const plateVal = state.plateScore ? Math.min(100, Math.round(state.plateScore * 9.7)) : 97;
+
+      const bars = [
+        { label: "Prep", val: prepVal, yLabel: 627, yBar: 618, color: "#72bbf0" },
+        { label: "Cook", val: cookVal, yLabel: 661, yBar: 652, color: "#f39a66" },
+        { label: "Plating", val: plateVal, yLabel: 695, yBar: 686, color: "#70d98f" }
+      ];
+
+      for (const bar of bars) {
+        ctx.fillStyle = "#e2f0ee";
+        ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(bar.label, 445, bar.yLabel);
+
+        // Dark track
+        ctx.fillStyle = "#0c191a";
+        roundRect(ctx, 520, bar.yBar, 240, 16, 8, true, false);
+
+        // Value bar fill
+        const fillW = Math.max(16, Math.min(240, Math.round(240 * (bar.val / 100))));
+        ctx.fillStyle = bar.color;
+        roundRect(ctx, 520, bar.yBar, fillW, 16, 8, true, false);
+
+        // Numeric text
+        ctx.fillStyle = "#e2f0ee";
+        ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+        ctx.fillText(bar.val.toString(), 778, bar.yLabel);
+      }
+
+      // Section 3: Stats
+      ctx.fillStyle = "#e2f0ee";
+      ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("STATS", 835, 615);
+
+      ctx.fillStyle = "#b8d5d1";
+      ctx.font = "13px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText("Scenes: 4/4", 835, 638);
+      ctx.fillText("Order: " + (state.orderChoice || "Herbal Bowl"), 835, 658);
+
+      const totalSecs = Math.max(252, Math.round(state.time || 252));
+      const mins = Math.floor(totalSecs / 60);
+      const secs = totalSecs % 60;
+      ctx.fillText("Time: " + mins + "m " + (secs < 10 ? "0" : "") + secs + "s", 835, 678);
+      ctx.fillText("Streak: 3 dishes", 835, 698);
+
+      ctx.textAlign = "left";
+    }
+
+    // --- UI Helper Functions ---
+    function renderSceneHUD(title, sub) {
+      ctx.fillStyle = "rgba(14, 38, 42, 0.92)";
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 2;
+      roundRect(ctx, 40, 20, 460, 60, 10, true, true);
+
+      ctx.fillStyle = "#e5b94c";
+      ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText(title, 55, 42);
+
+      ctx.fillStyle = "#99f6e4";
+      ctx.font = "12px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText(sub, 55, 62);
+    }
+
+    function renderCompletionModal(title, msg, scoreText, nextLabel) {
+      ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "rgba(14, 38, 42, 0.96)";
+      ctx.strokeStyle = "#e5b94c";
+      ctx.lineWidth = 3;
+      roundRect(ctx, 330, 200, 620, 280, 14, true, true);
+
+      ctx.fillStyle = "#e5b94c";
+      ctx.font = "bold 26px 'Cinzel', serif";
+      ctx.textAlign = "center";
+      ctx.fillText(title, 640, 255);
+
+      ctx.fillStyle = "#f0fdfa";
+      ctx.font = "16px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText(msg, 640, 295);
+
+      ctx.fillStyle = "#2dd4bf";
+      ctx.font = "bold 15px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillText(scoreText, 640, 335);
+
+      renderNextButton(720, 415, nextLabel, state.hoverBtn === "continue");
+      renderReplayButton(540, 415, state.hoverBtn === "replay");
+      ctx.textAlign = "left";
+    }
+
+    function renderNextButton(cx, cy, label, isHover) {
+      const sc = isHover ? 1.08 : 1.0;
+      ctx.drawImage(assets.btn_continue, cx - 38 * sc, cy - 34 * sc, 76 * sc, 68 * sc);
+      ctx.fillStyle = "#f0fdf4";
+      ctx.font = "bold 14px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(label, cx + 50, cy + 5);
+    }
+
+    function renderReplayButton(rx, ry, isHover) {
+      const sr = isHover ? 1.08 : 1.0;
+      ctx.drawImage(assets.btn_replay, rx - 35 * sr, ry - 32 * sr, 70 * sr, 64 * sr);
+      ctx.fillStyle = "#c8dcdc";
+      ctx.font = "11px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Replay", rx, ry + 42);
+      ctx.textAlign = "left";
+    }
+
+    function renderConfetti() {
+      for (const c of state.confetti) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.rotate(c.rot);
+        ctx.globalAlpha = Math.max(0, Math.min(1, c.alpha));
+        if (c.col) {
+          ctx.fillStyle = c.col;
+          ctx.fillRect(-5, -6, 10, 12);
+        } else if (assets.confetti) {
+          ctx.drawImage(assets.confetti, -10, -10, 20, 20);
+        }
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1.0;
+    }
+
+    function drawCharacter(img, x, y, w, h, flip = false) {
+      if (!img) return;
+      ctx.save();
+      if (flip) {
+        ctx.translate(x, y);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, -w / 2, -h / 2, w, h);
+      } else {
+        ctx.drawImage(img, x - w / 2, y - h / 2, w, h);
+      }
+      ctx.restore();
+    }
+
+    function drawMealCard(x, y, type, label, img, isHover) {
+      const scale = isHover ? 1.12 : 1.0;
+      const w = 84 * scale;
+      const h = 94 * scale;
+
+      ctx.fillStyle = (type === "spicy") ? "rgba(55, 25, 20, 0.95)" : "rgba(18, 55, 50, 0.95)";
+      ctx.strokeStyle = isHover ? "#ffe650" : (type === "spicy" ? "#dc6e50" : "#78c8a0");
+      ctx.lineWidth = isHover ? 3 : 2;
+
+      roundRect(ctx, x - w / 2 - 6, y - h / 2 - 6, w + 12, h + 12, 10, true, true);
+      ctx.drawImage(img, x - w / 2, y - h / 2 - 6, w, h - 16);
+
+      ctx.fillStyle = (type === "spicy") ? "#ffd2a0" : "#b4f5d2";
+      ctx.font = "bold 11px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x, y + h / 2 + 10);
+      ctx.textAlign = "left";
+    }
+
+    function drawAdvanceHint(text) {
+      const blink = Math.sin(state.time * 5) > 0;
+      ctx.fillStyle = blink ? "#e5b94c" : "#a08c46";
+      ctx.font = "bold 12px 'Plus Jakarta Sans', sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(text, 1200, 665);
+      ctx.textAlign = "left";
+    }
+
+    function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    function gameLoop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+      update(dt);
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function initGame() {
+      requestAnimationFrame((now) => {
+        lastTime = now;
+        gameLoop(now);
+      });
+    }
+  </script>
+</body>
+</html>
